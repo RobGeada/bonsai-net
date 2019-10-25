@@ -1,0 +1,7 @@
+data/**
+logs/**
+.ipynb_checkpoints/**
+.idea/**
+**/*.pt
+**/*.pkl
+__pycache__/**
