@@ -1,6 +1,7 @@
 data/**
 logs/**
 bonsai/notifier.py
+**/nohup.out
 .ipynb_checkpoints/**
 .idea/**
 **/*.pt
