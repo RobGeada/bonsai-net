@@ -1,8 +1,12 @@
+import ast
 import gc
 import logging
 import math
 import numpy as np
+import os
+import pickle as pkl
 import signal
+import subprocess
 import torch
 
 
@@ -47,6 +51,69 @@ def schedule_generator(lr):
     return lambda x: {'lr_min': lr['lr_min'], 'lr_max': lr['lr_max'], 't_0': x, 't_mult': 1}
 
 
+class LRScheduler:
+    def __init__(self, T, lr_max):
+        self.T = T
+        self.lr_max = lr_max
+        self.lr = lr_max
+        self.remaining = T
+        self.t = 0
+
+    def step(self):
+        self.t+=1
+        self.remaining-=1
+        self.lr = (.5 * self.lr_max) * (1 + np.cos((self.t * np.pi) / self.T))
+        return self.lr
+
+
+def cell_dims(data_shape, scale, patterns):
+    size = list(data_shape)
+    size[1] = 2 ** scale
+    sizes = set()
+    for i, pattern in enumerate(patterns):
+        for cell in pattern:
+            if any(x == 0 for x in size):
+                return sizes
+            if i and 'r' in cell:
+                size = channel_mod(size, size[1] * 2)
+                sizes.add(tuple(size))
+                size = width_mod(size, 2)
+            else:
+                sizes.add(tuple(size))
+
+
+def op_sizer(dims, single=True):
+    if single:
+        dims = [dims]
+    sizes = {}
+    for i,dim in enumerate(dims):
+        print("\rSizing potential cell dim {} of {}...".format(i+1,len(dims)),end="")
+        try:
+            cmd = 'python3 {}/op_sizer.py {}'.format(os.getcwd(), " ".join([str(x) for x in dim]))
+            size = subprocess.check_output(cmd.split()).decode("ascii").strip()
+            sizes[dim]=ast.literal_eval(size)
+        except Exception as e:
+            print(cmd)
+            raise e
+    return sizes
+
+
+def compute_sizes(sizes=None):
+    if sizes is not None:
+        with open("pickles/op_sizes.pkl", "wb") as f:
+            size_set = op_sizer(sizes, single=False)
+            pkl.dump(size_set, f)
+    else:
+        size_set = {}
+        if 'op_sizes.pkl' in os.listdir('pickles'):
+            try:
+                with open("pickles/op_sizes.pkl", "rb") as f:
+                    size_set = pkl.load(f)
+            except EOFError:
+                pass
+    return size_set
+
+
 def general_num_params(model):
     # return number of differential parameters of input model
     return sum([np.prod(p.size()) for p in filter(lambda p: p.requires_grad, model.parameters())])
@@ -79,9 +146,8 @@ class BST:
         self.min_step = (self.upper - self.lower) / (2 ** (self.max_depth - 1))
         self.answer = None
         self.passes = []
-        self.pass_dict={}
 
-    def query(self, result, g_comp):
+    def query(self, result):
         if self.pos <= self.lower:
             self.answer = self.lower
         elif self.pos >= self.upper:
@@ -96,7 +162,6 @@ class BST:
             self.depth += 1
         else:
             self.passes.append(self.pos)
-            self.pass_dict[self.pos]=g_comp
             self.pos += self.step
             if self.step > self.min_step:
                 self.step /= 2

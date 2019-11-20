@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import math
 import numpy as np
+
 from bonsai.helpers import general_num_params
 
 
@@ -50,7 +51,7 @@ class SeparableConv(nn.Module):
         ], [
             nn.Conv2d(c_in, c_in, kernel_size=kernel_size, stride=1, padding=padding, groups=c_in, bias=False),
             nn.Conv2d(c_in, c_in, kernel_size=1, padding=0, bias=False)
-        ])
+        ] )
 
     def forward(self, x):
         return self.op(x)
@@ -114,11 +115,11 @@ class NNView(nn.Module):
 
 # === PRUNERS ==========================================================================================================
 class Pruner(nn.Module):
-    def __init__(self, m=1e5, params=0, init=None):
+    def __init__(self, m=1e5, mem_size=0, init=None):
         super().__init__()
         if init is None:
             init = .1
-        self.params = params
+        self.mem_size = mem_size
         self.weight = nn.Parameter(torch.tensor([init]))
         self.m = m
         self.gate = lambda w: (.5 * w / torch.abs(w)) + .5
@@ -154,7 +155,7 @@ class Pruner(nn.Module):
 
 
 class PrunableOperation(nn.Module):
-    def __init__(self, op_function, name, c_in, stride, pruner_init=None, prune=True):
+    def __init__(self, op_function, name, mem_size, c_in, stride, pruner_init=None, prune=True):
         super().__init__()
         self.op_function = op_function
         self.stride = stride
@@ -163,7 +164,7 @@ class PrunableOperation(nn.Module):
         self.zero = name == 'Zero'
         self.prune = prune
         if self.prune:
-            self.pruner = Pruner(params=general_num_params(self.op), init=pruner_init)
+            self.pruner = Pruner(mem_size=mem_size, init=pruner_init)
 
     def track_gates(self):
         self.pruner.track_gates()
@@ -182,9 +183,10 @@ class PrunableOperation(nn.Module):
 
     def forward(self, x):
         if self.prune:
-            return self.op(x) if self.zero else self.pruner(self.op(x))
+            out = self.op(x) if self.zero else self.pruner(self.op(x))
         else:
-            return self.op(x)
+            out = self.op(x)
+        return out
 
 
 class PrunableInputs(nn.Module):

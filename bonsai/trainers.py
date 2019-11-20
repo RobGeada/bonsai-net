@@ -1,16 +1,11 @@
 import datetime
 import time
-import subprocess
-import os
 
 from apex import amp
-import pickle as pkl
 import torch.nn as nn
 import torch.optim as optim
 
 from bonsai.helpers import *
-
-
 
 # set up logging
 import logging
@@ -24,43 +19,43 @@ jn_print  = log_print_curry([jn_out])
 
 
 # === EPOCH LEVEL FUNCTIONS ============================================================================================
-def cosine_anneal_lr(optimizer, lr_min, lr_max, t_0, t, verbose):
+def set_lr(optimizer, lr):
     for param_group in optimizer.param_groups:
-        curr_lr = lr_min + .5 * (lr_max - lr_min) * (1 + np.cos((t * np.pi / t_0)))
-        param_group['lr'] = curr_lr
-    log_print("\n\x1b[31mAdjusting lr to {}\x1b[0m".format(curr_lr))
-    return curr_lr
+        param_group['lr'] = lr
+    log_print("\n\x1b[31mAdjusting lr to {}\x1b[0m".format(lr))
+    return lr
 
 
 # === CUSTOM LOSS FUNCTIONS ============================================================================================
 def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
     # edge pruning
-    '''
-    edge_pruners = torch.cat(
-        tuple(
-            [torch.sum(torch.cat(tuple(pruner.sg() for pruner in cell.edge_pruners))).view(-1) for cell in model.cells]
-        ))
-    edge_comp_ratio = torch.div(edge_pruners, model.edge_p_tot)
-    '''
-    prune_params = []
-    for cell in model.cells:
-        prune_params += [torch.sum(torch.cat([pruner.params*pruner.sg() for pruner in cell.edge_pruners])).view(-1)]
-    edge_comp_ratio = torch.div(torch.cat(prune_params), model.edge_params)
-    edge_comp = torch.norm(comp_ratio - edge_comp_ratio)
-    edge_loss = comp_lambda['edge'] * edge_comp
+    prune_sizes = []
+    if comp_lambda['edge']>0:
+        for cell in model.cells:
+            prune_sizes += [torch.sum(torch.cat([pruner.mem_size*pruner.sg() for pruner in cell.edge_pruners])).view(-1)]
+        edge_comp_ratio = torch.div(torch.cat(prune_sizes), model.edge_sizes)
+        edge_comp = torch.norm(comp_ratio - edge_comp_ratio)
+        edge_loss = comp_lambda['edge'] * edge_comp
+    else:
+        edge_loss = 0
 
     # input pruning
-    input_pruners = torch.cat(
-        tuple(
-            [torch.sum(torch.cat(tuple(pruner.sg() for pruner in cell.input_pruners))).view(-1) for cell in model.cells]
-        ))
-    input_comp_ratio = torch.div(input_pruners, model.input_p_tot)
-    input_comp = torch.norm(1/model.input_p_tot - input_comp_ratio)
-    input_loss = comp_lambda['input']*input_comp
+    if comp_lambda['input']>0:
+        input_pruners = torch.cat(
+            tuple(
+                [torch.sum(torch.cat(tuple(pruner.sg() for pruner in cell.input_pruners))).view(-1) for cell in model.cells]
+            ))
+        input_comp_ratio = torch.div(input_pruners, model.input_p_tot)
+        input_comp = torch.norm(1/model.input_p_tot - input_comp_ratio)
+        input_loss = comp_lambda['input']*input_comp
+    else:
+        input_loss = 0
 
     loss = edge_loss+input_loss
     if item_output:
-        return loss, [torch.mean(edge_comp_ratio).item(), torch.mean(input_pruners).item()], [edge_loss,input_loss]
+        ecr = 0 if edge_loss == 0 else torch.mean(edge_comp_ratio).item()
+        icr = 0 if input_loss == 0 else torch.mean(input_pruners).item()
+        return loss, [ecr,icr], [edge_loss,input_loss]
     else:
         return loss, None, None
 
@@ -112,7 +107,7 @@ def train(model, device, train_loader, **kwargs):
 
 
         verbose = kwargs['epoch'] == 0 and batch_idx == 0
-        outputs = model.forward(data, kwargs.get('drop_prob', 0), auxiliary=True, verbose=verbose)
+        outputs = model.forward(data, model.drop_prob, auxiliary=True, verbose=verbose)
 
         # classification loss =================
         def loss_f(x): return kwargs['criterion'](x, target)
@@ -156,7 +151,7 @@ def train(model, device, train_loader, **kwargs):
             else:
                 prog_str += 'Comp Ratio: [E: {:.3f}, I: {:.3f}]'.format(*comp_ratio)
                 prog_str += ', Loss Comp: [C: {:.3f}, E: {:.3f}, I: {:.2f}], '.format(*loss_components)
-            prog_str += "Losses [{}]".format(losses_out)
+            prog_str += "Losses [{}] ".format([])
             prog_str += 'Per Epoch: {:<7}, '.format(show_time((time.time() - batch_start) * len(train_loader)))
             prog_str += 'Alloc: {:<9}'.format(mem_stats())
             jn_print(prog_str, end="\r", flush=True)
@@ -171,7 +166,7 @@ def train(model, device, train_loader, **kwargs):
 def test(model, device, test_loader, top_k=[1]):
     # === tracking stats =====================
     max_k = max(top_k)
-    corrects,e_corrects = np.zeros(len(top_k)), np.zeros(len(top_k))
+    corrects, e_corrects = np.zeros(len(top_k)), np.zeros(len(top_k))
     t_start = time.time()
 
     # === test epoch =========================
@@ -189,36 +184,30 @@ def test(model, device, test_loader, top_k=[1]):
     return accuracy_string("Last Tower Test ", corrects, t_start, test_loader, top_k, return_str=True)
 
 
-def size_test(model, dataset, half=False, verbose=False):
+def size_test(model, verbose=False):
     # run a few batches through the model to get an estimate of its GPU size
     try:
+        start_size = mem_stats(False)/(1024**3)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.to(device)
         criterion = nn.CrossEntropyLoss()
 
-        if half and not model.half:
-            model = amp.initialize(model, opt_level='O1', verbosity=0)
-            model.half = True
-            [edge.set_half_mask() for edge in model.edges]
-
         model.train()
-        for batch_idx, (data, target) in enumerate(dataset[0]):
+        for batch_idx, (data, target) in enumerate(model.data[0]):
             data, target = data.to(device), target.to(device)
-            out = model.forward(data, drop_prob=.25, auxiliary=True, verbose=(verbose and batch_idx==0))
+            out = model.forward(data, auxiliary=True, verbose=(verbose and batch_idx==0))
             loss = criterion(out[-1], target)
             loss.backward()
             if batch_idx > 2:
                 break
         overflow = False
-        size = mem_stats(False)/(1024**3)
-        g_comp = model.genotype_compression()[0]
+        size = mem_stats(False)/(1024**3)-start_size
         clean(verbose=False)
     except RuntimeError as e:
         if 'CUDA out of memory' in str(e):
             overflow = True
             model = model.to(torch.device('cpu'))
             size = mem_stats(False)/(1024**3)
-            g_comp=None
             clean(verbose=False)
             del model
             try:
@@ -228,95 +217,64 @@ def size_test(model, dataset, half=False, verbose=False):
             clean(verbose=False)
         else:
             raise e
-    return size, g_comp, overflow
-    
-def sp_size_test(n, e_c, **kwargs):
-    with open("size_test_in.pkl","wb") as f:
-        pkl.dump([n,e_c,kwargs],f)
-    s=subprocess.check_output("python3 {}/size_tester.py".format(os.getcwd()).split())
+    return size, overflow
+
+
+def sp_size_test(n, e_c, prune=True,**kwargs):
+    with open("pickles/size_test_in.pkl","wb") as f:
+        pkl.dump([n,e_c,prune,kwargs],f)
+    s=subprocess.check_output("python3 {}/bonsai/size_tester.py".format(os.getcwd()).split())
     if kwargs.get('print_model',False):
         print(s.decode('utf8'))
-    with open("size_test_out.pkl","rb") as f:
+    with open("pickles/size_test_out.pkl","rb") as f:
         return pkl.load(f)
     
 
 # === FULL TRAINING HANDLER=============================================================================================
-def full_train(model, data, epochs, **kwargs):
+def full_train(model, epochs, **kwargs):
     # === unpack data/ tracking stats=========
-    train_loader, test_loader = data
+    train_loader, test_loader = model.data
 
     # === learning handlers ==================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    optimizer = optim.SGD(model.parameters(), lr=kwargs['lr_schedule']['lr_max'], momentum=.9, weight_decay=3e-4)
+    optimizer = optim.SGD(model.parameters(), lr=model.lr_scheduler.lr, momentum=.9, weight_decay=3e-4)
     model.jn_print, model.log_print = jn_print, log_print
-    
-    if kwargs.get("resume", False):
-        print('Restoring run...')
-        checkpoint = torch.load('checkpoint.pt')
-        model.load_state_dict(checkpoint['model'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        s_epoch = checkpoint['epoch']
-        t = checkpoint['t']
-        t_0 = checkpoint['t_0']
-    else:
-        s_epoch, t, t_0 = 0, 0, kwargs['lr_schedule']['t_0']
-        print("=== Training {} ===".format(model.model_id))
-        # === init logging =======================
-        training_logger.info("=== NEW FULL TRAIN ===")
-        log_print("Starting at {}".format(datetime.datetime.now()))
-        training_logger.info(model.creation_string())
+    print("=== Training {} ===".format(model.model_id))
+
+    # === init logging =======================
+    training_logger.info("=== NEW FULL TRAIN ===")
+    log_print("Starting at {}".format(datetime.datetime.now()))
+    training_logger.info(model.creation_string())
 
     if torch.cuda.is_available():
         model.cuda()
 
     criterion = nn.CrossEntropyLoss()
-    if kwargs.get("half", False) and not model.half:
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
-        model.half = True
-        [edge.set_half_mask() for edge in model.edges]
 
     # === run n epochs =======================
-    for epoch in range(s_epoch, epochs):
-        try:
-            with DelayedKeyboardInterrupt():
-                training_logger.info("=== EPOCH {} ===".format(epoch))
+    for epoch in range(model.lr_scheduler.t, model.lr_scheduler.t+epochs):
+        training_logger.info("=== EPOCH {} ===".format(epoch))
 
-                # train =========================
-                train(model, device, train_loader, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
-                model.save_genotype()
+        # train =========================
+        train(model, device, train_loader, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
+        model.save_genotype()
 
+        # prune ==============================
+        if kwargs.get('comp_lambdas', TransitionDict()) != None:
+            model.eval()
+            [pruner.track_gates() for pruner in model.edge_pruners + model.input_pruners]
+            if epoch and not (epoch + 1) % kwargs['prune_interval']:
+                model.deadhead()
 
-                # prune ==============================
-                if kwargs.get('comp_lambdas', TransitionDict()) != None:
-                    model.eval()
-                    [pruner.track_gates() for pruner in model.edge_pruners + model.input_pruners]
-                    if epoch and not (epoch + 1) % kwargs['prune_interval']:
-                        model.deadhead()
-                jn_print("MGC:", model.genotype_compression()[0])
+        if model.prune:
+            hard, soft  = model.genotype_compression()[:2]
+            if soft and hard:
+                jn_print("Soft Comp: {:.3f}, Hard Comp: {:.3f}".format(soft,hard))
 
-                # test ===============================
-                log_print(test(model, device, test_loader, top_k=kwargs.get('top_k', [1])))
+        # test ===============================
+        log_print(test(model, device, test_loader, top_k=kwargs.get('top_k', [1])))
 
-                # anneal =============================
-                if t == t_0:
-                    t_0 *= kwargs['lr_schedule']['t_mult']
-                    t = 0
-                    jn_print("\n\x1b[31mRestarting Learning Rate, setting new cycle length to {}\x1b[0m".format(t_0))
-                cosine_anneal_lr(optimizer,
-                                 lr_min=kwargs['lr_schedule']['lr_min'],
-                                 lr_max=kwargs['lr_schedule']['lr_max'],
-                                 t_0=t_0,
-                                 t=t,
-                                 verbose=kwargs.get('verbose', False))
-                t += 1
-        except KeyboardInterrupt:
-            print("\nPausing run at epoch {}...".format(epoch))
-            torch.save({'model': model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        't': t,
-                        'epoch': epoch+1,
-                        't_0': t_0},
-                        'checkpoint.pt')
-            clean()
-            return False
+        # anneal =============================
+        set_lr(optimizer, model.lr_scheduler.step())
+
     return True
