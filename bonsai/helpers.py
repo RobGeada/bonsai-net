@@ -10,7 +10,7 @@ import subprocess
 import torch
 
 
-# === TORCH HELPERS ====================================================================================================
+# ==+ TORCH HELPERS ====================================================================================================
 def clean(name=None, verbose=True):
     pre = mem_stats()
     gc.collect()
@@ -89,7 +89,8 @@ def op_sizer(dims, single=True):
     for i,dim in enumerate(dims):
         print("\rSizing potential cell dim {} of {}...".format(i+1,len(dims)),end="")
         try:
-            cmd = 'python3 {}/op_sizer.py {}'.format(os.getcwd(), " ".join([str(x) for x in dim]))
+            here = os.path.dirname(os.path.abspath(__file__))
+            cmd = 'python3 {}/sizer.py o {}'.format(here, " ".join([str(x) for x in dim]))
             size = subprocess.check_output(cmd.split()).decode("ascii").strip()
             sizes[dim]=ast.literal_eval(size)
         except Exception as e:

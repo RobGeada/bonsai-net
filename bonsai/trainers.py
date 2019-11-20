@@ -1,4 +1,5 @@
 import datetime
+import os
 import time
 
 from apex import amp
@@ -223,7 +224,7 @@ def size_test(model, verbose=False):
 def sp_size_test(n, e_c, prune=True,**kwargs):
     with open("pickles/size_test_in.pkl","wb") as f:
         pkl.dump([n,e_c,prune,kwargs],f)
-    s=subprocess.check_output("python3 {}/bonsai/size_tester.py".format(os.getcwd()).split())
+    s=subprocess.check_output(["python3", "{}/sizer.py".format(os.path.dirname(os.path.abspath(__file__)))])
     if kwargs.get('print_model',False):
         print(s.decode('utf8'))
     with open("pickles/size_test_out.pkl","rb") as f:
