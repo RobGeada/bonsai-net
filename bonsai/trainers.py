@@ -26,6 +26,12 @@ def set_lr(optimizer, lr):
     log_print("\n\x1b[31mAdjusting lr to {}\x1b[0m".format(lr))
     return lr
 
+def extract_curr_lambdas(comp_lambdas,epoch):
+    comp_lambda = None
+    if comp_lambdas:
+        if epoch>=comp_lambdas['transition']:
+            comp_lambda = comp_lambdas['lambdas']
+    return comp_lambda
 
 # === CUSTOM LOSS FUNCTIONS ============================================================================================
 def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
@@ -90,7 +96,7 @@ def train(model, device, train_loader, **kwargs):
     top_k = kwargs.get('top_k', [1])
     max_k = max(top_k)
     corrects = np.zeros(len(top_k), dtype=float)
-    comp_lambda = kwargs.get('comp_lambdas', TransitionDict())[kwargs['epoch']]
+    comp_lambda = extract_curr_lambdas(kwargs.get('comp_lambdas'),kwargs['epoch'])
 
     # === train epoch =========================
     model.train()
@@ -105,7 +111,6 @@ def train(model, device, train_loader, **kwargs):
         data, target = data.to(device), target.to(device)
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader)-1):
             kwargs['optimizer'].zero_grad()
-
 
         verbose = kwargs['epoch'] == 0 and batch_idx == 0
         outputs = model.forward(data, model.drop_prob, auxiliary=True, verbose=verbose)
@@ -148,11 +153,12 @@ def train(model, device, train_loader, **kwargs):
                 len(train_loader.dataset),
                 100. * (batch_idx + 1) / len(train_loader))
             if comp_lambda is None:
-                prog_str += 'Loss: {:1.3f}, '.format(loss.item())
+                pass
+                #prog_str += 'Loss: {:1.3f}, '.format(loss.item())
             else:
-                prog_str += 'Comp Ratio: [E: {:.3f}, I: {:.3f}]'.format(*comp_ratio)
+                prog_str += 'Comp Raqtio: [E: {:.3f}, I: {:.3f}]'.format(*comp_ratio)
                 prog_str += ', Loss Comp: [C: {:.3f}, E: {:.3f}, I: {:.2f}], '.format(*loss_components)
-            prog_str += "Losses [{}] ".format([])
+            #prog_str += "Losses [{}] ".format([])
             prog_str += 'Per Epoch: {:<7}, '.format(show_time((time.time() - batch_start) * len(train_loader)))
             prog_str += 'Alloc: {:<9}'.format(mem_stats())
             jn_print(prog_str, end="\r", flush=True)
@@ -176,12 +182,12 @@ def test(model, device, test_loader, top_k=[1]):
         for batch_idx, (data, target) in enumerate(test_loader):
             data, target = data.to(device), target.to(device)
             outputs = model.forward(data, drop_prob=0, auxiliary=True)
-            e_output = torch.mean(torch.stack(outputs, 1), 1)
+            #e_output = torch.mean(torch.stack(outputs, 1), 1)
             corrects = corrects + top_k_accuracy(outputs[-1], target, top_k=top_k, max_k=max_k)
-            e_corrects = e_corrects + top_k_accuracy(e_output, target, top_k=top_k, max_k=max_k)
+            #e_corrects = e_corrects + top_k_accuracy(e_output, target, top_k=top_k, max_k=max_k)
 
     # === format results =====================
-    log_print(accuracy_string("All Towers Test ", e_corrects, t_start, test_loader, top_k, return_str=True))
+    #log_print(accuracy_string("All Towers Test ", e_corrects, t_start, test_loader, top_k, return_str=True))
     return accuracy_string("Last Tower Test ", corrects, t_start, test_loader, top_k, return_str=True)
 
 
@@ -261,16 +267,17 @@ def full_train(model, epochs, **kwargs):
         model.save_genotype()
 
         # prune ==============================
-        if kwargs.get('comp_lambdas', TransitionDict()) != None:
+        comp_lambda = extract_curr_lambdas(kwargs.get('comp_lambdas'),epoch)
+        if comp_lambda != None:
             model.eval()
             [pruner.track_gates() for pruner in model.edge_pruners + model.input_pruners]
             if epoch and not (epoch + 1) % kwargs['prune_interval']:
                 model.deadhead()
 
         if model.prune:
-            hard, soft  = model.genotype_compression()[:2]
+            hard, soft = model.genotype_compression()[:2]
             if soft and hard:
-                jn_print("Soft Comp: {:.3f}, Hard Comp: {:.3f}".format(soft,hard))
+                jn_print("Soft Comp: {:.3f}, Hard Comp: {:.3f}".format(soft, hard))
 
         # test ===============================
         log_print(test(model, device, test_loader, top_k=kwargs.get('top_k', [1])))

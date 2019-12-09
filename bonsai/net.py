@@ -215,11 +215,11 @@ class Net(nn.Module):
         pkl.dump(self.extract_genotype(), open('genotypes/genotype_{}.pkl'.format(id_str), 'wb'))
         pkl.dump(self.extract_genotype(tensors=False), open('genotypes/genotype_{}_np.pkl'.format(id_str), 'wb'))
 
-    def genotype_compression(self):
+    def genotype_compression(self, used_ratio=False):
         soft_ops = 0
         hard_ops = 0
         out = [None,None,None]
-        if self.prune['edge']:
+        if not used_ratio and self.prune['edge']:
             for cell in self.cells:
                 soft_ops, hard_ops = cell.genotype_compression(soft_ops, hard_ops)
             out[0] = (hard_ops/sum(self.edge_sizes)).item()
@@ -238,8 +238,11 @@ class Net(nn.Module):
     def __str__(self):
         def out_format(l="", p="", d="", c=""):
             sep = ' : '
-            out_fmt = '{l:}{s}{d}{s}{p}{s}{c}\n'.format(l='{l:<20}', d='{d:^12}', p='{p:^10}', c='{c:^9}', s=sep)
-            p = "{:,}".format(p) if isinstance(p, (float, int)) else p
+            out_fmt = '{l:}{s}{d}{s}{p}{s}{c}\n'.format(l='{l:<20}', d='{d:^12}', p='{p:^12}', c='{c:^9}', s=sep)
+            try:
+                p = "{:,}".format(p)
+            except ValueError:
+                pass
             c = "{:.1f}%".format(c*100) if isinstance(c, (float, int)) else c
             c = "" if c is None else c
             return out_fmt.format(l=l, p=p, d=d, c=c)
@@ -257,7 +260,7 @@ class Net(nn.Module):
         if 'Classifier' in self.towers:
             out += out_format(l=" ↳ Classifier", p=general_num_params(self.towers['Classifier']))
         out += spacer.format("")
-        out += out_format(l="Total", p=general_num_params(self), c=self.genotype_compression()[0])
+        out += out_format(l="Total", p=general_num_params(self), c=self.genotype_compression(used_ratio=True)[0])
         out += spacer.format("")
         return out
 
@@ -278,7 +281,7 @@ class Net(nn.Module):
         self.jn_print("Cell Size Est:",sizeof_fmt(self.cell_size_est*1024*1024))
         self.jn_print('Initializer              : {:>10,} params'.format(general_num_params(self.initializer)))
         for i, cell in enumerate(self.cells):
-            self.jn_print("=== {} ===".format(cell))
+            self.jn_print("=== {} ===".format(i))
             self.jn_print(cell.detail_print(minimal))
             if str(i) in self.towers.keys():
                 self.jn_print('Aux Tower:               : {:>10,} params'.format(

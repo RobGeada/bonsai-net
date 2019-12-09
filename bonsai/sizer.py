@@ -53,9 +53,7 @@ if __name__ == '__main__':
         model.data = data
 
         if kwargs.get('remove_prune') is True:
-            print(size_test(model, verbose=kwargs.get('verbose', False)))
-            model.remove_pruners(remove_edge=True)
-            print(size_test(model, verbose=kwargs.get('verbose', False)))
+            model.remove_pruners(remove_input=True, remove_edge=True)
             model.add_pattern(full_ops=True)
         elif kwargs.get('add_pattern', False):
             model.add_pattern(prune=prune, full_ops=True)

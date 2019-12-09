@@ -65,6 +65,22 @@ class LRScheduler:
         self.lr = (.5 * self.lr_max) * (1 + np.cos((self.t * np.pi) / self.T))
         return self.lr
 
+    
+def get_n_patterns(patterns, dim, target=None):
+    if target is None:
+        target = np.log2(dim[2])
+    tot_patterns,tot_reducts = 0, 0
+    for i,pattern in enumerate(looping_generator(patterns)):
+        reducts = 0
+        for j,cell in enumerate(pattern):
+            if 'r' in cell and not (i==0 and j==0):
+                reducts += 1
+        if tot_reducts+reducts<=target and (tot_reducts!=target):
+            tot_reducts+=reducts
+            tot_patterns+=1
+        else:
+            return tot_patterns
+        
 
 def cell_dims(data_shape, scale, patterns):
     size = list(data_shape)
@@ -174,49 +190,6 @@ def looping_generator(l):
     while 1:
         yield l[n % len(l)]
         n += 1
-
-
-class DelayedKeyboardInterrupt(object):
-    def __enter__(self):
-        self.signal_received = False
-        self.signals = 0
-        self.old_handler = signal.signal(signal.SIGINT, self.handler)
-
-    def handler(self, sig, frame):
-        self.signal_received = (sig, frame)
-        self.signals += 1
-        if self.signals > 1:
-            exit(0)
-        print("\nDelaying interrupt for epoch end. Interrupt again to force kill.".format(self.signals))
-
-    def __exit__(self, type, value, traceback):
-        signal.signal(signal.SIGINT, self.old_handler)
-        if self.signal_received:
-            self.old_handler(*self.signal_received)
-
-
-class TransitionDict:
-    def __init__(self, d={}):
-        self.d = d
-        self.keys = list(d.keys())
-
-    def __getitem__(self, index):
-        if not len(self.keys):
-            return None
-        for i, key in enumerate(self.keys):
-            if i == len(self.keys) - 1 and self.keys[-1] <= index:
-                return self.d[self.keys[-1]]
-            elif self.keys[i] <= index < self.keys[i + 1]:
-                return self.d[self.keys[i]]
-
-    def __ne__(self, other):
-        if other is None and len(self.keys):
-            return True
-        elif other is None and not len(self.keys):
-            return False
-        else:
-            raise NotImplementedError
-
 
 def div_remainder(n, interval):
     # finds divisor and remainder given some n/interval

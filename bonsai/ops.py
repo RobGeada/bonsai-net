@@ -1,27 +1,18 @@
+from inplace_abn import ABN
 import torch.nn as nn
 import torch
 import math
 import numpy as np
 
-from bonsai.helpers import general_num_params
-
 
 # === OPERATION HELPERS ================================================================================================
 def bracket(ops, ops2=None):
-    first_relu = False
-    inplace = False
-    affine = True
-
-    if first_relu:
-        out = [nn.ReLU(inplace=inplace)] + ops + [nn.BatchNorm2d(ops[-1].out_channels, affine=affine)]
-        if ops2:
-            out += [nn.ReLU(inplace=inplace)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=affine)]
-        return nn.Sequential(*out)
+    if not ops2:
+        out = ops + [nn.BatchNorm2d(ops[-1].out_channels, affine=True)]
     else:
-        out = ops + [nn.BatchNorm2d(ops[-1].out_channels, affine=affine)]
-        if ops2:
-            out += [nn.ReLU(inplace=inplace)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=affine)]
-        return nn.Sequential(*out)
+        out = ops + [ABN(ops[-1].out_channels)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=True)]
+        #out += [nn.ReLU(inplace=inplace)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=affine)]
+    return nn.Sequential(*out)
 
 
 # === INDIVIDUAL OPERATIONS ============================================================================================

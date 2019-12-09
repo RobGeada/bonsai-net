@@ -1,10 +1,16 @@
+from IPython.display import clear_output
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib import gridspec
 import numpy as np
+from pyautogui import hotkey
+import time
 import re
+import os
+from scipy.optimize import curve_fit
 import sys
+
 
 plt.style.reload_library()
 plt.style.use('material')
@@ -46,7 +52,7 @@ def scrape(prog=False):
         return curr_prog
 
     for line in logs:
-        if line == "" and 'Test AT Acc' in row:
+        if line == "" and 'Test LT Acc' in row:
             row['Aim Comp'] = aim
             row['Target Comp'] = target
             if row:
@@ -122,27 +128,11 @@ class PruneAnimator:
             self.axes[-1].clear()
             self.axes[-1].barh(1, prog, align='center', color='#FFCB6B')
             self.axes[-1].set_xlim(0, 100)
-            self.axes[-1].set_title("Epoch {} Progress".format(len(df)), fontsize=7)
+            self.axes[-1].set_title("Epoch {} Progress ({:.0f}%)".format(len(df),prog), fontsize=7)
             self.axes[-1].set_yticks([])
             self.axes[-1].set_xticks(range(0, 110, 10))
             self.prog = prog
         return self.axes
-
-
-def plot_prune(figsize=(10, 4)):
-    col_sets = [
-        ['Train Acc', 'Test LT Acc', 'Test AT Acc'],
-        ['C Loss', 'E Loss', 'I Loss'],
-        ['Hard Comp', 'Soft Comp', 'Aim Comp', 'Target Comp'],
-        ['Input Comp']
-    ]
-    fig = plt.figure(figsize=figsize, dpi=125)
-    gs = gridspec.GridSpec(len(col_sets) + 1, 1, height_ratios=[1] * len(col_sets) + [.25])
-    axes = [plt.subplot(g) for g in gs]
-    plt.subplots_adjust(left=.05, right=.95, top=.95, bottom=.05, hspace=.35)
-    animator = PruneAnimator(axes, col_sets)
-    ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
-    plt.show()
 
 
 # === TRAIN SCRAPING ===================================================================================================
@@ -249,7 +239,6 @@ def proc_all_runs():
     for col in [col for col in list(runs) if 'Top' in col]:
         runs[col] = runs[col].apply(lambda x: x if type(x) == list else [])
     runs['LT Test Top-1 Max'] = runs['LT Test Top-1'].apply(lambda x: max(x, default=0))
-    runs['AT Test Top-1 Max'] = runs['AT Test Top-1'].apply(lambda x: max(x, default=0))
     runs['Epoch'] = runs['Epochs'].apply(lambda x: x[-1] if len(x) else 0)
     return runs
 
@@ -271,20 +260,72 @@ class TrainAnimator:
         compare = full_runs['LT Test Top-1'].values[0]
         compare_str = 'PR'
 
-        at, lt = max(runs.iloc[-1]['AT Test Top-1']), max(runs.iloc[-1]['LT Test Top-1'])
-        at_last, lt_last = runs.iloc[-1]['AT Test Top-1'][-1], runs.iloc[-1]['LT Test Top-1'][-1]
+        lt = max(runs.iloc[-1]['LT Test Top-1'])
+        lt_last =  runs.iloc[-1]['LT Test Top-1'][-1]
         curr_run = runs.iloc[-1]
         epoch = runs.iloc[-1]['Epoch']
         cm = plt.cm.Spectral
 
+        def smooth_avg(l,window=10):
+            out = []
+            for i,x in enumerate(l):
+                sub = min(i, window)
+                if i==0:
+                    out.append(x)
+                else:
+                    out.append(np.mean([l[i-j] for j in range(sub)]))
+            return np.array(out)
+
+        def smooth_std(l,window=10):
+            out = []
+            for i,x in enumerate(l):
+                sub = min(i, window)
+                if i==0:
+                    out.append(0)
+                else:
+                    out.append(np.std([l[i-j] for j in range(sub)]))
+            return np.array(out)
+
+        def smooth_max(l):
+            out=[max(l[:i+1]) for i,x in enumerate(l)]
+            return out
+
+        def fit_curve(xs,ys):
+            start = 50
+            if len(xs) > start:
+                def func(x, a, b, c): return a + b * np.log(c * x)
+                def func2(x, args): return func(x, args[0], args[1], args[2])
+                curve = curve_fit(func,
+                                  xs[start:],
+                                  smooth_max(ys[start:]),
+                                  bounds=[[-np.inf,-np.inf,.0001],np.inf])
+                new_x = np.append(np.array(xs), np.arange(max(xs), 600))[start:]
+
+                return new_x, func2(new_x, curve[0])
+            return None,None
+
         # plot previous runs
+        w = 5, 15
         if epoch!=self.curr_epoch:
             self.axes[0].clear()
             self.axes[1].clear()
             for i, (idx,run) in enumerate(full_runs.iterrows()):
                 ys = run['LT Test Top-1']
-                xs = list(run['Epochs'])[:len(ys)]
-                self.axes[0].plot(xs,ys, color=cm(i / len(full_runs)), alpha=.75 if i == 0 else .5)
+                xs = np.array(list(run['Epochs'])[:len(ys)])
+                if min(xs)==0 and max(xs)==518:
+                    xs+=82
+                smooth = False
+                #x_f, y_f = fit_curve(xs, ys)
+                #self.axes[0].plot(x_f, y_f, color=cm(i / len(full_runs)), alpha=.75 if i == 0 else .5)
+                if not smooth:
+                    self.axes[0].plot(xs, smooth_max(ys), color=cm(i / len(full_runs)), alpha=(.75 if i == 0 else .5)+.05)
+                else:
+                    self.axes[0].fill_between(xs,
+                                              smooth_avg(ys, w[0]) - smooth_std(ys, w[1]),
+                                              np.minimum(smooth_max(ys),
+                                                         smooth_avg(ys, w[0]) + smooth_std(ys, w[1])),
+                                              color=cm(i / len(full_runs)),
+                                              alpha=.75 if i == 0 else .5)
 
         # plot current run
         if epoch < 0:
@@ -298,8 +339,8 @@ class TrainAnimator:
                 rec, rec_max, rec_arg_max = compare[epoch], max(compare[:epoch + 1]), np.argmax(compare[:epoch + 1])
 
                 text = "==== EPOCH {} ======================================\n".format(epoch)
-                text += "AT Max: {} LT Max: {}\n".format(at, lt)
-                text += "AT Last: {} LT Last: {}\n".format(at_last, lt_last)
+                text += "LT Max: {}\n".format(lt)
+                text += "LT Last: {}\n".format(lt_last)
                 text += "Current Delta to {}:     {:> 2.2f}% ({}% vs {}%)\n".format(compare_str, curr - rec, curr, rec)
                 text += "Current Delta to {} Max: {:> 2.2f}% ({}% @{} vs {}% @{})".format(compare_str,
                                                                                           curr_max - rec_max,
@@ -307,11 +348,18 @@ class TrainAnimator:
                                                                                           curr_arg_max,
                                                                                           rec_max,
                                                                                           rec_arg_max)
-                self.axes[0].text(-30,100.5,text,fontsize=8, fontfamily='monospace')
+                yrange = 100-min(curr_run['LT Test Top-1'][-10:])
+                self.axes[0].text(-30,100+yrange/15, text, fontsize=8, fontfamily='monospace')
                 ys = curr_run['LT Test Top-1']
                 xs = list(curr_run['Epochs'])[:len(ys)]
-                self.axes[0].plot(xs,ys, color='k', linewidth=1.5)
+
+                self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
+                x_f, y_f = fit_curve(xs, ys)
+                if x_f is not None:
+                    self.axes[0].plot(x_f, y_f, color='k', linewidth=1.5)
+                #self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
                 self.axes[0].set_ylim(min(curr_run['LT Test Top-1'][-10:])-1, 100)
+                self.axes[0].set_ylim(90, 100)
                 self.axes[0].set_title("CIFAR-10 Loss History, Bonsai Net")
                 self.axes[0].set_xlabel("Epoch", fontsize=8)
                 self.axes[0].set_ylabel("Accuracy", fontsize=8)
@@ -324,28 +372,87 @@ class TrainAnimator:
             self.axes[-1].clear()
             self.axes[-1].barh(1, prog, align='center', color='#FFCB6B')
             self.axes[-1].set_xlim(0, 100)
-            self.axes[-1].set_title("Epoch Progress", fontsize=7)
+            self.axes[-1].set_title("Epoch {} Progress ({}%)".format(epoch, prog), fontsize=7)
             self.axes[-1].set_yticks([])
             self.axes[-1].set_xticks(range(0, 110, 10))
             self.prog = prog
         return self.axes
 
 
-def plot_train(figsize=(10, 4)):
-    fig = plt.figure(figsize=figsize, dpi=125)
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1/10])
-    axes = [plt.subplot(g) for g in gs]
+# === PLOTTERS =========================================================================================================
+def plot_monitor(fn):
+    def monitor_loop(self, cleaner=clear_output):
+        curr_progress = self.update_check()
+        while 1:
+            fn(self)
+            new_prog = self.update_check()
+            
+            while new_prog == curr_progress:
+                time.sleep(15)
+                new_prog = self.update_check()
+            cleaner()
+            curr_progress = self.update_check()
+    return monitor_loop
 
-    plt.subplots_adjust(left=.05, right=.95, top=.89, bottom=.05, hspace=.15)
-    animator = TrainAnimator(axes)
-    ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
-    plt.show()
+
+class PrunePlot:
+    def __init__(self, figsize=(10,4)):
+        self.figsize = figsize
+        self.col_sets = [
+            ['Train Acc', 'Test LT Acc', 'Test AT Acc'],
+            ['C Loss', 'E Loss', 'I Loss'],
+            ['Hard Comp', 'Soft Comp', 'Aim Comp', 'Target Comp'],
+            ['Input Comp']
+        ]
+        self.update_check = lambda: scrape(prog=True)
+
+    def plot(self, resize=False):
+        fig = plt.figure(figsize=self.figsize, dpi=125)
+        gs = gridspec.GridSpec(len(self.col_sets) + 1, 1, height_ratios=[1] * len(self.col_sets) + [.25])
+        axes = [plt.subplot(g) for g in gs]
+        plt.subplots_adjust(left=.05, right=.95, top=.95, bottom=.05, hspace=.35)
+        animator = PruneAnimator(axes, self.col_sets)
+        ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
+        plt.draw()
+        plt.pause(.001)
+        if resize:
+            # this is a dumb thing for my specific computer
+            hotkey('winleft', 'ctrl', '6')
+        plt.show()
+
+    @plot_monitor
+    def monitor(self):
+        self.plot()
+
+
+class TrainPlot:
+    def __init__(self, figsize=(10, 4)):
+        self.figsize = figsize
+        self.update_check = lambda: len(scrape()[0])
+
+    def plot(self, resize=False):
+        fig = plt.figure(figsize=self.figsize, dpi=125)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1/15])
+        axes = [plt.subplot(g) for g in gs]
+
+        plt.subplots_adjust(left=.05, right=.95, top=.88, bottom=.05, hspace=.15)
+        animator = TrainAnimator(axes)
+        ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
+        plt.draw()
+        plt.pause(.001)
+        if resize:
+            # this is a dumb thing for my specific computer
+            hotkey('winleft', 'ctrl', '6')
+        plt.show()
+
+    @plot_monitor
+    def monitor(self):
+        self.plot()
 
 
 # === MAIN =============================================================================================================
 if __name__=='__main__':
-    path = "../"
     if sys.argv[1]=='p':
-        plot_prune()
+        PrunePlot().plot(resize=True)
     else:
-        plot_train()
+        TrainPlot().plot(resize=True)
