@@ -263,7 +263,7 @@ def full_train(model, epochs, **kwargs):
     if torch.cuda.is_available():
         model.cuda()
 
-
+    criterion = nn.CrossEntropyLoss()
 
     # === run n epochs =======================
     for epoch in range(model.lr_scheduler.t, model.lr_scheduler.t+epochs):
