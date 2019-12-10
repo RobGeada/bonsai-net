@@ -2,6 +2,8 @@ from bonsai.ops import *
 from bonsai.helpers import *
 from bonsai.cell import Cell
 
+arrow_char = "↳"
+
 
 class Net(nn.Module):
     def __init__(self, **kwargs):
@@ -256,9 +258,11 @@ class Net(nn.Module):
         for i,cell in enumerate(self.cells):
             out += cell.__repr__(out_format)
             if str(i) in self.towers.keys():
-                out += out_format(l=" ↳ Aux Tower", p=general_num_params(self.towers[str(i)]))
+                out += out_format(l=" {} Aux Tower".format(arrow_char),
+                                  p=general_num_params(self.towers[str(i)]))
         if 'Classifier' in self.towers:
-            out += out_format(l=" ↳ Classifier", p=general_num_params(self.towers['Classifier']))
+            out += out_format(l=" {} Classifier".format(arrow_char),
+                              p=general_num_params(self.towers['Classifier']))
         out += spacer.format("")
         out += out_format(l="Total", p=general_num_params(self), c=self.genotype_compression(used_ratio=True)[0])
         out += spacer.format("")

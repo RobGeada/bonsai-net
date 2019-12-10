@@ -80,10 +80,10 @@ def load_data(batch_size, dataset, metadata=None):
 
         train_loader = torch.utils.data.DataLoader(train_data,
                                                    batch_size=batch_size,
-                                                   shuffle=True, num_workers=4)
+                                                   shuffle=True)
         test_loader = torch.utils.data.DataLoader(test_data,
                                                   batch_size=batch_size,
-                                                  shuffle=False, num_workers=4)
+                                                  shuffle=False)
     elif dataset is 'ImageNet':
         MEAN = [0.485, 0.456, 0.406]
         STD  = [0.229, 0.224, 0.225]

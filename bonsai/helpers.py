@@ -274,8 +274,9 @@ def wipe_output():
 def get_python3():
     try:
         devnull = open(os.devnull)
-        subprocess.Popen(["python3 -V"], stdout=devnull, stderr=devnull).communicate()
+        subprocess.Popen(["python3", "-V"], stdout=devnull, stderr=devnull).communicate()
     except OSError as e:
+        print(e)
         if e.errno == os.errno.ENOENT:
             return 'python'
         else:

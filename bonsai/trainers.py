@@ -90,7 +90,7 @@ def accuracy_string(prefix, corrects, t_start, loader, top_k, comp_ratio=None, r
 
 
 # === BASE LEVEL TRAIN AND TEST FUNCTIONS===============================================================================
-def train(model, device, train_loader, **kwargs):
+def train(model, device, **kwargs):
     # === tracking stats ======================
     top_k = kwargs.get('top_k', [1])
     max_k = max(top_k)
@@ -99,6 +99,7 @@ def train(model, device, train_loader, **kwargs):
 
     # === train epoch =========================
     model.train()
+    train_loader = model.data[0]
     epoch_start = time.time()
     multiplier = kwargs.get('multiplier',1)
     jn_print(datetime.datetime.now().strftime("%m/%d/%Y %I:%M %p"))
@@ -162,6 +163,9 @@ def train(model, device, train_loader, **kwargs):
             prog_str += 'Alloc: {:<9}, '.format(mem_stats())
             prog_str += 'Data T: {:<6.3f}, Op T: {:<6.3f}'.format(t_cumul_data,t_cumul_ops)
             jn_print(prog_str, end="\r", flush=True)
+
+        if batch_idx > kwargs.get('kill_at', np.inf):
+            break
         t_cumul_ops += (time.time()-t_op_start)
         t_data_start = time.time()
 
@@ -172,8 +176,9 @@ def train(model, device, train_loader, **kwargs):
         log_print("Train Loss Components: C: {:.3f}, E: {:.3f}, I: {:.2f}".format(*loss_components))
 
 
-def test(model, device, test_loader, top_k=[1]):
+def test(model, device, top_k=[1]):
     # === tracking stats =====================
+    test_loader = model.data[1]
     max_k = max(top_k)
     corrects, e_corrects = np.zeros(len(top_k)), np.zeros(len(top_k))
     t_start = time.time()
@@ -243,8 +248,6 @@ def sp_size_test(n, e_c, prune=True,**kwargs):
 
 # === FULL TRAINING HANDLER=============================================================================================
 def full_train(model, epochs, **kwargs):
-    # === unpack data/ tracking stats=========
-    train_loader, test_loader = model.data
 
     # === learning handlers ==================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -260,14 +263,14 @@ def full_train(model, epochs, **kwargs):
     if torch.cuda.is_available():
         model.cuda()
 
-    criterion = nn.CrossEntropyLoss()
+
 
     # === run n epochs =======================
     for epoch in range(model.lr_scheduler.t, model.lr_scheduler.t+epochs):
         training_logger.info("=== EPOCH {} ===".format(epoch))
 
         # train =========================
-        train(model, device, train_loader, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
+        train(model, device, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
         model.save_genotype()
 
         # prune ==============================
@@ -284,7 +287,7 @@ def full_train(model, epochs, **kwargs):
                 jn_print("Soft Comp: {:.3f}, Hard Comp: {:.3f}".format(soft, hard))
 
         # test ===============================
-        log_print(test(model, device, test_loader, top_k=kwargs.get('top_k', [1])))
+        log_print(test(model, device, top_k=kwargs.get('top_k', [1])))
 
         # anneal =============================
         set_lr(optimizer, model.lr_scheduler.step())

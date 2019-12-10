@@ -17,18 +17,17 @@ if __name__ == '__main__':
         'batch_size': 64,
         'scale': 5,
         'nodes': 4,
-        'patterns': [['n', 'n', 'na'], ['r', 'n', 'n', 'na'], ['r', 'n', 'na'], ['r', 'n', 'na'], ['r', 'n', 'na'],
-                     ['r', 'na'], ['n', 'na']],
+        'patterns': [['r','n','n','n','na']],
         'half': False,
         'multiplier': 1,
         'lr_schedule':
             {'lr_max': .01,
-             'T': 600},
+             'T': 1},
         'drop_prob': .25,
         'prune_rate': {'edge': .5, 'input': .5}
     }
     data, dim = load_data(hypers['batch_size'], hypers['dataset'])
-    hypers['num_patterns'] = 7
+    hypers['num_patterns'] = 1
 
     model = Net(dim=dim,
                 classes=hypers['classes'],
@@ -36,10 +35,20 @@ if __name__ == '__main__':
                 num_patterns=hypers['num_patterns'],
                 patterns=hypers['patterns'],
                 nodes=hypers['nodes'],
-                random_ops={'e_c': .5, 'i_c': 1},
+                random_ops={'e_c': .25, 'i_c': 1},
                 drop_prob=hypers['drop_prob'],
                 lr_schedule=hypers['lr_schedule'],
                 prune=False)
     model.data = data
-    print(model)
-    full_train(model, hypers['lr_schedule']['T'])
+
+    optimizer = optim.SGD(model.parameters(), lr=model.lr_scheduler.lr, momentum=.9, weight_decay=3e-4)
+    criterion = nn.CrossEntropyLoss()
+    model.cuda()
+    with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        train(model,
+              torch.device("cuda"),
+              criterion=criterion,
+              optimizer=optimizer,
+              epoch=0,
+              kill_at=100)
+    print(prof)
