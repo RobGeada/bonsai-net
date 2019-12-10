@@ -1,4 +1,3 @@
-from inplace_abn import ABN
 import torch.nn as nn
 import torch
 import math
@@ -7,11 +6,9 @@ import numpy as np
 
 # === OPERATION HELPERS ================================================================================================
 def bracket(ops, ops2=None):
-    if not ops2:
-        out = ops + [nn.BatchNorm2d(ops[-1].out_channels, affine=True)]
-    else:
-        out = ops + [ABN(ops[-1].out_channels)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=True)]
-        #out += [nn.ReLU(inplace=inplace)] + ops2 + [nn.BatchNorm2d(ops2[-1].out_channels, affine=affine)]
+    out = ops + [nn.BatchNorm2d(ops[-1].out_channels, affine=True)]
+    if ops2:
+        out += [nn.ReLU(inplace=False)] + ops2 + [nn.BatchNorm2d(ops[-1].out_channels, affine=True)]
     return nn.Sequential(*out)
 
 

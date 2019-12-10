@@ -105,8 +105,9 @@ def op_sizer(dims, single=True):
     for i,dim in enumerate(dims):
         print("\rSizing potential cell dim {} of {}...".format(i+1,len(dims)),end="")
         try:
-            here = os.path.dirname(os.path.abspath(__file__))
-            cmd = 'python3 {}/sizer.py o {}'.format(here, " ".join([str(x) for x in dim]))
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'sizer.py')
+            python = get_python3()
+            cmd = '{} {} o {}'.format(python, path, " ".join([str(x) for x in dim]))
             size = subprocess.check_output(cmd.split()).decode("ascii").strip()
             sizes[dim]=ast.literal_eval(size)
         except Exception as e:
@@ -269,3 +270,15 @@ def prev_output(raw=False):
 
 def wipe_output():
     open("logs/jn_out.log", "w").close()
+
+
+def get_python3():
+    try:
+        devnull = open(os.devnull)
+        subprocess.Popen(["python3 -V"], stdout=devnull, stderr=devnull).communicate()
+    except OSError as e:
+        if e.errno == os.errno.ENOENT:
+            return 'python'
+        else:
+            raise e
+    return 'python3'

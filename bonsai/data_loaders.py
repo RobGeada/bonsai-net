@@ -18,36 +18,38 @@ torch.backends.cudnn.deterministic=True
 
 
 # === CUTOUT ===========================================================================================================
-# from github.com/hysts/pytorch_cutout
-def cutout(mask_size, p, mask_color=(0, 0, 0)):
-    mask_size_half = mask_size // 2
-    offset = 1 if mask_size % 2 == 0 else 0
+# adapted from github.com/hysts/pytorch_cutout
+class Cutout:
+    def __init__(self, mask_size, p, mask_color=(0, 0, 0)):
+        self.mask_size = mask_size
+        self.p = p
+        self.mask_color = mask_color
+        self.mask_size_half = mask_size // 2
+        self.offset = 1 if mask_size % 2 == 0 else 0
 
-    def _cutout(image):
+    def __call__(self, image):
         image = np.asarray(image).copy()
 
-        if np.random.random() > p:
+        if np.random.random() > self.p:
             return image
 
         h, w = image.shape[:2]
 
-        cxmin, cxmax = 0, w + offset
-        cymin, cymax = 0, h + offset
+        cxmin, cxmax = 0, w + self.offset
+        cymin, cymax = 0, h + self.offset
 
         cx = np.random.randint(cxmin, cxmax)
         cy = np.random.randint(cymin, cymax)
-        xmin = cx - mask_size_half
-        ymin = cy - mask_size_half
-        xmax = xmin + mask_size
-        ymax = ymin + mask_size
+        xmin = cx - self.mask_size_half
+        ymin = cy - self.mask_size_half
+        xmax = xmin + self.mask_size
+        ymax = ymin + self.mask_size
         xmin = max(0, xmin)
         ymin = max(0, ymin)
         xmax = min(w, xmax)
         ymax = min(h, ymax)
-        image[ymin:ymax, xmin:xmax] = mask_color
+        image[ymin:ymax, xmin:xmax] = self.mask_color
         return image
-
-    return _cutout
 
 
 # === DATA HELPERS =====================================================================================================
@@ -66,7 +68,7 @@ def load_data(batch_size, dataset, metadata=None):
                                       transform=transforms.Compose([
                                           transforms.RandomCrop(32, padding=4),
                                           transforms.RandomHorizontalFlip(),
-                                          cutout(mask_size=16, p=.5, mask_color=MEAN),
+                                          Cutout(mask_size=16, p=.5, mask_color=MEAN),
                                           transforms.ToTensor(),
                                           transforms.Normalize(MEAN, STD)]
                                       ))
@@ -80,10 +82,10 @@ def load_data(batch_size, dataset, metadata=None):
 
         train_loader = torch.utils.data.DataLoader(train_data,
                                                    batch_size=batch_size,
-                                                   shuffle=True)
+                                                   shuffle=True, num_workers=4)
         test_loader = torch.utils.data.DataLoader(test_data,
                                                   batch_size=batch_size,
-                                                  shuffle=False)
+                                                  shuffle=False, num_workers=4)
     elif dataset is 'ImageNet':
         MEAN = [0.485, 0.456, 0.406]
         STD  = [0.229, 0.224, 0.225]

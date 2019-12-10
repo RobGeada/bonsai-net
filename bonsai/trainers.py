@@ -103,7 +103,15 @@ def train(model, device, train_loader, **kwargs):
     epoch_start = time.time()
     multiplier = kwargs.get('multiplier',1)
     jn_print(datetime.datetime.now().strftime("%m/%d/%Y %I:%M %p"))
+
+    t_data_start = None
+    t_cumul_data, t_cumul_ops = 0,0
     for batch_idx, (data, target) in enumerate(train_loader):
+        t_data_end = time.time()
+        if t_data_start is not None:
+            t_cumul_data += (t_data_end-t_data_start)
+        t_op_start = time.time()
+
         print_or_end = (not batch_idx % 10) or (batch_idx == len(train_loader)-1)
         batch_start = time.time()
 
@@ -152,16 +160,15 @@ def train(model, device, train_loader, **kwargs):
                 (batch_idx + 1) * len(data),
                 len(train_loader.dataset),
                 100. * (batch_idx + 1) / len(train_loader))
-            if comp_lambda is None:
-                pass
-                #prog_str += 'Loss: {:1.3f}, '.format(loss.item())
-            else:
-                prog_str += 'Comp Raqtio: [E: {:.3f}, I: {:.3f}]'.format(*comp_ratio)
+            if comp_lambda is not None:
+                prog_str += 'Comp Ratio: [E: {:.3f}, I: {:.3f}]'.format(*comp_ratio)
                 prog_str += ', Loss Comp: [C: {:.3f}, E: {:.3f}, I: {:.2f}], '.format(*loss_components)
-            #prog_str += "Losses [{}] ".format([])
             prog_str += 'Per Epoch: {:<7}, '.format(show_time((time.time() - batch_start) * len(train_loader)))
-            prog_str += 'Alloc: {:<9}'.format(mem_stats())
+            prog_str += 'Alloc: {:<9}, '.format(mem_stats())
+            prog_str += 'Data T: {:<6.3f}, Op T: {:<6.3f}'.format(t_cumul_data,t_cumul_ops)
             jn_print(prog_str, end="\r", flush=True)
+        t_cumul_ops += (time.time()-t_op_start)
+        t_data_start = time.time()
 
     # === output ===============
     jn_print(prog_str)
@@ -230,7 +237,9 @@ def size_test(model, verbose=False):
 def sp_size_test(n, e_c, prune=True,**kwargs):
     with open("pickles/size_test_in.pkl","wb") as f:
         pkl.dump([n,e_c,prune,kwargs],f)
-    s=subprocess.check_output(["python3", "{}/sizer.py".format(os.path.dirname(os.path.abspath(__file__)))])
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sizer.py')
+    python = get_python3()
+    s=subprocess.check_output([python, path])
     if kwargs.get('print_model',False):
         print(s.decode('utf8'))
     with open("pickles/size_test_out.pkl","rb") as f:
