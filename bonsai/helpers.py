@@ -5,7 +5,6 @@ import math
 import numpy as np
 import os
 import pickle as pkl
-import signal
 import subprocess
 import torch
 

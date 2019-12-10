@@ -1,15 +1,12 @@
 import datetime
-import os
 import time
 
-from apex import amp
 import torch.nn as nn
 import torch.optim as optim
 
 from bonsai.helpers import *
 
 # set up logging
-import logging
 setup_logger("training_logger", filename='logs/trainer.log', mode='a', terminator="\n")
 setup_logger("jn_out", filename='logs/jn_out.log', mode='a', terminator="")
 training_logger = logging.getLogger('training_logger')
@@ -26,12 +23,14 @@ def set_lr(optimizer, lr):
     log_print("\n\x1b[31mAdjusting lr to {}\x1b[0m".format(lr))
     return lr
 
+
 def extract_curr_lambdas(comp_lambdas,epoch):
     comp_lambda = None
     if comp_lambdas:
         if epoch>=comp_lambdas['transition']:
             comp_lambda = comp_lambdas['lambdas']
     return comp_lambda
+
 
 # === CUSTOM LOSS FUNCTIONS ============================================================================================
 def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
@@ -142,11 +141,7 @@ def train(model, device, train_loader, **kwargs):
 
         # end train step ======================
         loss = loss/multiplier
-        if kwargs.get("half", False):
-            with amp.scale_loss(loss, kwargs['optimizer']) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
+        loss.backward()
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader) - 1):
             kwargs['optimizer'].step()
         corrects = corrects + top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]), max_k=max_k)

@@ -4,17 +4,23 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib import gridspec
 import numpy as np
-from pyautogui import hotkey
 import time
 import re
-import os
 from scipy.optimize import curve_fit
 import sys
 
+# === SOME OPTIONAL CONFIGS ============================================================================================
+try:
+    from pyautogui import hotkey
+    resize_default = True
+except ImportError as e:
+    resize_default = False
 
 plt.style.reload_library()
-plt.style.use('material')
-
+try:
+    plt.style.use('material')
+except OSError:
+    pass
 
 # === HELPERS ==========================================================================================================
 def time_parse(t):
@@ -453,6 +459,6 @@ class TrainPlot:
 # === MAIN =============================================================================================================
 if __name__=='__main__':
     if sys.argv[1]=='p':
-        PrunePlot().plot(resize=True)
+        PrunePlot().plot(resize=resize_default)
     else:
-        TrainPlot().plot(resize=True)
+        TrainPlot().plot(resize=resize_default)

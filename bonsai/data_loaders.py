@@ -1,8 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import random
 import os
-import pickle as pkl
 
 import torch
 from torchvision import datasets, transforms
