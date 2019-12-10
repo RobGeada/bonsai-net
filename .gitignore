@@ -4,6 +4,7 @@ bonsai/notifier.py
 **/nohup.out
 .ipynb_checkpoints/**
 .idea/**
+scratch.ipynb   
 **/*.pt
 **/*.pkl
 **/__pycache__/**
