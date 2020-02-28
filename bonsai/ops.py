@@ -145,7 +145,9 @@ class Pruner(nn.Module):
         self.mem_size = mem_size
         self.weight = nn.Parameter(torch.tensor([init]))
         self.m = m
-        self.gate = lambda w: torch.sigmoid(self.m*w)
+
+        #self.gate = lambda w: torch.sigmoid(self.m*w)
+        self.gate = lambda w: (.5 * w / torch.abs(w)) + .5
         self.saw = lambda w: (self.m * w - torch.floor(self.m * w)) / self.m
         self.weight_history = [1]
 
