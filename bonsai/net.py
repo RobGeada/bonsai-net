@@ -28,49 +28,55 @@ class Net(nn.Module):
         self.jn_print = print
 
         # training parameters
-        self.lr_scheduler = LRScheduler(kwargs['lr_schedule']['T'], kwargs['lr_schedule']['lr_max'])
+        self.lr_schedulers = {}
+        self.lr_init = kwargs['lr_schedule']
 
         # initialize torch params
-        self.initializer = initializer(self.input_dim[1], 2 ** self.scale)
-        dim = channel_mod(self.input_dim, 2 ** self.scale)
+        self.initializer = initializer(self.input_dim[1], self.scale)
+        dim = channel_mod(self.input_dim, self.scale)
         self.cell_size_est = 0
         self.dim, self.dims, self.dim_counts = dim, [dim], []
         self.raw_cells, scalers = [], {}
         self.reductions = 0
         self.cells, self.cell_types, self.edges = None, {}, None
         if any(self.prune.values()):
-            self.edge_pruners, self.input_pruners, self.edge_p_tot, self.input_p_tot = None, None, None, None
+            self.edge_p_tot, self.input_p_tot = None, None
         self.global_pooling = None
 
         # build cells
         self.cell_idx = 0
         cell_dim_set = cell_dims(self.dim, self.scale, looping_generator(kwargs['patterns']))
         size_set = compute_sizes()
-        if not all([dim in size_set for dim in cell_dim_set]):
+        op_match = (len(size_set)>0) and all([op in list(size_set.values())[0].keys() for op in commons])
+        if not op_match or not all([dim in size_set for dim in cell_dim_set]):
             size_set = compute_sizes(cell_dim_set)
         self.size_set = size_set
 
+        self.pattern_params = {}
         for pattern in range(kwargs['num_patterns']):
-            self.add_pattern()
+            self.add_pattern(random_ops=kwargs.get('random_ops'))
 
-    def add_cell(self, cell_type, aux, prune=None, scale=False, full_ops=False):
+    def add_cell(self, cell_type, preserve_aux, classifier, prune=None, scale=False, random_ops=None):
         if prune is None:
             prune = self.prune
         cell_type = 'Normal' if len(self.dims) == 1 else cell_type
-        random_ops = False if full_ops else self.creation_params.get("random_ops", False)
+
         if 'genotype' in self.creation_params:
             cell_genotype = self.creation_params['genotype'].get(len(self.dims)-1)
         else:
             cell_genotype = None
 
-        self.raw_cells.append(Cell(len(self.dims)-1,
-                                   cell_type,
-                                   self.dims,
-                                   self.nodes,
-                                   genotype=cell_genotype,
-                                   op_sizes=self.size_set,
-                                   random_ops=random_ops,
-                                   prune=prune))
+        new_cell = Cell(len(self.dims)-1,
+                        cell_type,
+                        self.dims,
+                        self.nodes,
+                        genotype=cell_genotype,
+                        op_sizes=self.size_set,
+                        random_ops=random_ops,
+                        prune=prune)
+        new_params = list(new_cell.parameters())
+        removed_params = []
+        self.raw_cells.append(new_cell)
 
         if cell_type is 'Reduction':
             self.dim = cw_mod(self.dim, 2)
@@ -78,43 +84,78 @@ class Net(nn.Module):
         self.dim_counts += [len(self.dims)]
         self.dims.append(self.dim)
 
-        if aux:
+        if classifier:
             if len(self.towers) and 'Classifier' in self.towers:
                 new_name = str(self.towers['Classifier'].position)
                 self.towers[new_name] = self.towers.pop('Classifier')
-            self.towers['Classifier'] = Classifier(len(self.dims)-2, 
-                                                   self.dim, 
-                                                   self.classes, 
+            if len(list(self.towers)) > 1:
+                tower_to_remove = list(sorted(self.towers.keys()))[-2]
+                if not self.towers[tower_to_remove].preserve_aux:
+                    removed_params = list(self.towers[tower_to_remove].parameters())
+                    old_class = self.towers.pop(tower_to_remove)
+                    del old_class
+            self.towers['Classifier'] = Classifier(len(self.dims) - 2,
+                                                   preserve_aux,
+                                                   self.dim,
+                                                   self.classes,
                                                    scale=scale)
+            new_params += list(self.towers['Classifier'].parameters())
         self.track_params()
-        return True
+        return new_params, removed_params
 
-    def add_pattern(self, prune=None, full_ops=False):
+    def add_pattern(self, prune=None, random_ops=None):
         if prune is None:
             prune = self.prune
-        prune = {'edge':prune,'input':prune}
-        for cell in next(self.patterns):
+        prune = {'edge':prune, 'input':prune}
+        pattern_params, pattern_removals = [],[]
+        next_pattern = next(self.patterns)
+        for i, cell in enumerate(next_pattern):
             cell_type = 'Normal' if 'n' in cell else 'Reduction'
-            aux = 'a' in cell
+            preserve_aux = 'a' in cell
             scale = 's' in cell
-            self.add_cell(cell_type, prune=prune, aux=aux, scale=scale, full_ops=full_ops)
+            classifier = i == len(next_pattern)-1
+            new_params, removed_params = self.add_cell(cell_type,
+                                                       prune=prune,
+                                                       preserve_aux=preserve_aux,
+                                                       classifier=classifier,
+                                                       scale=scale,
+                                                       random_ops=random_ops)
+            pattern_params += new_params
+            pattern_removals += removed_params
+        
+        # add parameters into groups
+        epochs_remaining = self.lr_schedulers['init'].remaining if self.lr_schedulers else self.lr_init['T']
+        p_key = 'init' if not self.pattern_params else epochs_remaining            
+        int_keys = [x for x in self.pattern_params.keys() if type(x) is int]
+        prev_key = min(int_keys) if len(int_keys)>1 else 'init'
+        self.pattern_params[p_key] = pattern_params
+        
+        if prev_key!=p_key:
+            new_prev_params = []
+            for p in self.pattern_params[prev_key]:
+                no_matches = True
+                for r in pattern_removals:
+                    if p.shape==r.shape:
+                        if torch.all(torch.eq(p, r)):
+                            no_matches = False
+                if no_matches:
+                    new_prev_params.append(p)
+            self.pattern_params[prev_key]=new_prev_params
+        self.lr_schedulers[p_key] = LRScheduler(epochs_remaining, self.lr_init['lr_max'])
 
     def track_params(self):
         self.cells = nn.ModuleList(self.raw_cells)
         self.cell_size_est = sum([cell.size_est for cell in self.cells])
-        self.edges = nn.ModuleList([cell.edges[key] for cell in self.cells for key in cell.edges])
         if any(self.prune.values()):
             if self.prune['edge']:
-                self.edge_pruners = [pruner for cell in self.cells for pruner in cell.edge_pruners]
                 self.edge_p_tot = torch.Tensor([len(commons) * len(cell.edges) for cell in self.cells]).cuda()
                 self.edge_sizes = []
                 for cell in self.cells:
-                    cell_sizes = sum([op.pruner.mem_size for k, edge in cell.edges.items() for op in edge.ops])
+                    cell_sizes = sum([op.pruner.mem_size if op.pruner else 0 for k, edge in cell.edges.items() for op in edge.ops])
                     self.edge_sizes.append(cell_sizes)
                 self.edge_sizes = torch.Tensor(self.edge_sizes).cuda()
 
             if self.prune['input']:
-                self.input_pruners= [pruner for cell in self.cells for pruner in cell.input_pruners]
                 self.input_p_tot = torch.Tensor(self.dim_counts).cuda()
             self.save_genotype()
         self.global_pooling = nn.AdaptiveAvgPool2d(self.dim[1:][-1])
@@ -125,24 +166,13 @@ class Net(nn.Module):
             if remove_input:
                 cell.input_handler.prune = False
                 del cell.input_handler.pruners
-                del cell.input_pruners
                 cell.prune['input']=False
             if remove_edge:
-                del cell.edge_pruners
                 cell.prune['edge'] = False
                 for k,edge in cell.edges.items():
-                    del edge.pruners
                     for op in edge.ops:
                         op.prune = False
                         del op.pruner
-       
-        if remove_edge:
-            del self.edge_pruners
-            self.edge_pruners=[]
-
-        if remove_input:
-            del self.input_pruners
-            del self.input_p_tot
 
         if remove_input:
             clean("Input Pruner Removal")
@@ -153,42 +183,48 @@ class Net(nn.Module):
         if drop_prob is None:
             drop_prob = self.drop_prob
         outputs = []
+        start_mem = mem_stats(False)
         xs = [self.initializer(x)]
         if verbose:
-            self.jn_print("Init: {}".format(mem_stats()))
+            self.jn_print("Init: {}".format(cache_stats()))
         for i in range(len(self.cells)):
+            start_mem = mem_stats(False)
             x = self.cells[i].forward(xs, drop_prob)
             if verbose:
-                self.jn_print("{}: {}".format(i, mem_stats()))
+                self.jn_print("{}: {}".format(i,cache_stats()))
             if str(i) in self.towers.keys():
+                start_mem = mem_stats(False)
                 outputs.append(self.towers[str(i)](x))
                 if verbose:
-                    self.jn_print("Tower {}: {}".format(i, mem_stats()))
+                    self.jn_print("Tower {}: {}".format(i,cache_stats()))
             xs.append(x)
+        start_mem = mem_stats(False)
         x = self.global_pooling(xs[-1])
         if verbose:
-            self.jn_print("{}: {}".format('GP', mem_stats()))
+            self.jn_print("GP: {}".format(cache_stats()))
         outputs.append(self.towers['Classifier'](x))
+        start_mem = mem_stats(False)
         if verbose:
-            self.jn_print("Classifier: {}".format(mem_stats()))
+            self.jn_print("Classifier: {}".format(cache_stats()))
         return outputs if auxiliary else outputs[-1]
 
     def deadhead(self):
         old_params = general_num_params(self)
         deadheads = 0
-        if self.edge_pruners:
-            deadheads += sum([edge.deadhead() for edge in self.edges])
-        if self.input_pruners:
+        if self.prune['edge']:
+            deadheads += sum([cell.edges[key].deadhead() for cell in self.cells for key in cell.edges])
+        if self.prune['input']:
             deadheads += sum([cell.input_handler.deadhead() for cell in self.cells])
         self.log_print("\nDeadheaded {} operations".format(deadheads))
         self.log_print("Param Delta: {:,} -> {:,}".format(old_params, general_num_params(self)))
+        clean("Deadhead",verbose=False)
         self.save_genotype()
 
     def extract_genotype(self, tensors=True):
         if tensors:
-            def conversion(x): return x
+            def conversion(x): return x.weight if x else -np.inf
         else:
-            def conversion(x): return np.round(x.item(), 2)
+            def conversion(x): return np.round(x.weight.item(), 2) if x else -np.inf
 
         cell_genotypes = {}
         for cell in self.cells:
@@ -197,14 +233,14 @@ class Net(nn.Module):
             # edge genotype
             for key, edge in cell.edges.items():
                 if self.prune['edge']:
-                    edge_params = [[str(op), conversion(op.pruner.weight)] for op in edge.ops if not op.zero]
+                    edge_params = [[str(op), conversion(op.pruner)] for op in edge.ops if not op.zero]
                 else:
                     edge_params = [[str(op), 1] for op in edge.ops if not op.zero]
                 cell_genotype["{}->{}".format(edge.origin, edge.target)] = edge_params
 
             # input genotype
             if self.prune['input']:
-                cell_genotype['Y'] = {'weights': [conversion(pruner.weight) for pruner in cell.input_handler.pruners],
+                cell_genotype['Y'] = {'weights': [conversion(pruner) for pruner in cell.input_handler.pruners],
                                       'zeros': cell.input_handler.zeros}
             else:
                 cell_genotype['Y'] = {'zeros': cell.input_handler.zeros}

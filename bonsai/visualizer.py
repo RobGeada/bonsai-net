@@ -6,12 +6,14 @@ from matplotlib import gridspec
 import numpy as np
 import time
 import re
+from bonsai.helpers import show_time
 from scipy.optimize import curve_fit
 import sys
 
 # === SOME OPTIONAL CONFIGS ============================================================================================
 try:
     from pyautogui import hotkey
+
     resize_default = True
 except ImportError as e:
     resize_default = False
@@ -21,6 +23,7 @@ try:
     plt.style.use('material')
 except OSError:
     pass
+
 
 # === HELPERS ==========================================================================================================
 def time_parse(t):
@@ -35,13 +38,13 @@ path = ""
 
 
 def get_prune_logs():
-    with open(path+"logs/jn_out.log", "r") as f:
+    with open(path + "logs/jn_out.log", "r") as f:
         out = f.read().replace('\x00', '')
     return out.split("\n")
 
 
 def get_raw_runs():
-    with open(path+"logs/trainer.log") as f:
+    with open(path + "logs/trainer.log") as f:
         data = f.read()
     runs = data.split('=== NEW FULL TRAIN ===')
     return [run for run in runs if 'Starting at' in run]
@@ -65,7 +68,8 @@ def scrape(prog=False):
                 rows.append(row)
             row = {}
         if 'Adjusting lr' in line:
-            row['Learning Rate'] = float(line.split("to")[1].split("\x1b[0m")[0])
+            lrs = line.split("to [")[1].split("]\x1b[0m")[0]
+            row['Learning Rate'] = [float(x.strip()) for x in lrs.split(",")]
         if 'Target Comp' in line:
             target = float(line.split(":")[1].split(",")[0])
             if 'Aim' in line:
@@ -114,7 +118,7 @@ class PruneAnimator:
             labeled = True
             for label in cols:
                 if label not in list(df):
-                    labeled=False
+                    labeled = False
                     continue
                 self.axes[i].plot(df[label], label=label)
                 if df[label].min(skipna=True) < dmin:
@@ -126,15 +130,15 @@ class PruneAnimator:
             if labeled:
                 self.axes[i].legend(fontsize=7)
             if any(['Acc' in c for c in cols]):
-
-                self.axes[i].set_yticks(np.arange(np.floor(dmin/10)*10, np.ceil(dmax/10)*10,10))
+                self.axes[i].set_yticks(np.arange(np.floor(dmin / 10) * 10, np.ceil(dmax / 10) * 10, 10))
+            self.axes[i].set_xticks(np.arange(0, np.ceil(len(df) / 10) * 10, 10))
+            self.axes[i].set_xlim(-1, np.ceil(len(df) / 10) * 10)
             self.axes[i].set_title(", ".join(cols), fontsize=7)
 
         if prog != self.prog:
             self.axes[-1].clear()
             self.axes[-1].barh(1, prog, align='center', color='#FFCB6B')
-            self.axes[-1].set_xlim(0, 100)
-            self.axes[-1].set_title("Epoch {} Progress ({:.0f}%)".format(len(df),prog), fontsize=7)
+            self.axes[-1].set_title("Epoch {} Progress ({:.0f}%)".format(len(df), prog), fontsize=7)
             self.axes[-1].set_yticks([])
             self.axes[-1].set_xticks(range(0, 110, 10))
             self.prog = prog
@@ -154,12 +158,52 @@ def accuracy(raw_line, prefix, run_details):
     return run_details
 
 
+def time_proc(raw_line):
+    try:
+        raw_line = raw_line.replace("min", "m")
+        raw_line = raw_line.replace(" m","m")
+        raw_line = raw_line.replace("m, ", "m")
+        raw_line = raw_line.replace("m,", "m")
+        raw_line = raw_line.replace(" s", "s")
+        if 'Time' in raw_line:
+            run_time = raw_line.split("Time: ")[1]
+        elif 'Comp' in raw_line:
+            run_time = raw_line.split("Comp")[1]
+            if len(run_time.split(" ")) == 5:
+                run_time = "".join(raw_line.split(" ")[-2:])
+            else:
+                run_time = "".join([x for x in raw_line.split(" ")[-2:] if 'm' in x or 's' in x])
+            run_time = run_time.replace(',', "")
+        else:
+            run_time = raw_line.split(", ")[-1]
+
+        secs = 0
+        if 'm' in run_time:
+            if 'Comp' in run_time:
+                if ' ' not in run_time:
+                    run_time = run_time[-6:].replace(",", "")
+                else:
+                    run_time = run_time.split(" ")[-1]
+            secs += 60 * int(run_time.split("m")[0])
+            if 's' in run_time:
+                secs += int(run_time.split("m")[1].split("s")[0])
+        else:
+            secs += float(run_time.split("s")[0])
+        if '7m,52s' in raw_line:
+            print(raw_line,run_time, secs)
+        return secs
+    except Exception as e:
+        print(raw_line)
+        print(run_time)
+        raise e
+
+
 def proc_run(run):
     run_details = {}
     curr_epoch = -1
     deadhead_history = []
     param_history = []
-    epochs = []
+    epochs,epoch_times = [],[]
     a_loss, e_loss, i_loss = [], [], []
 
     prev_line = ""
@@ -199,6 +243,9 @@ def proc_run(run):
         # add accuracies
         if 'Train Corrects:' in raw_line:
             run_details = accuracy(raw_line, 'Train', run_details)
+            if "," in raw_line and ('s'==raw_line[-1] or 'm'==raw_line[-1]):
+                epoch_times.append(time_proc(raw_line))
+
         elif ('Last Towers Test' in raw_line and 'Corrects' in raw_line) or (
                 'Test' in raw_line and 'Towers' not in raw_line and 'Corrects' in raw_line) or 'test acc' in raw_line:
             run_details = accuracy(raw_line, 'LT Test', run_details)
@@ -220,6 +267,8 @@ def proc_run(run):
         if raw_line != "":
             prev_line = raw_line
     run_details['Loss Accuracy'] = a_loss
+    run_details['Epoch_Times'] = epoch_times
+    run_details['Total_Train_Time']= show_time(sum(epoch_times))
     run_details['Loss Edge'] = e_loss
     run_details['Loss Input'] = i_loss
     run_details['Epochs'] = epochs
@@ -251,93 +300,84 @@ def proc_all_runs():
 
 # === TRAIN VISUALIZATION ==============================================================================================
 class TrainAnimator:
-    def __init__(self, axes):
+    def __init__(self, axes, marker):
         self.axes = axes
+        self.marker = marker
         self.prog = 0
         self.curr_epoch = 0
 
     def animate(self, i):
         runs = proc_all_runs()
-        full_runs = runs[runs[['LT Test Top-1','Epochs']].\
-            apply(lambda x: len(x['LT Test Top-1']) > 512,axis=1)]. \
-            sort_values(by='LT Test Top-1 Max', ascending=False)
-
+        full_runs = runs[runs['Epochs'].apply(lambda x: len(x)>1 and max(x)>512)].sort_values(by='LT Test Top-1 Max', ascending=False)
 
         compare = full_runs['LT Test Top-1'].values[0]
         compare_str = 'PR'
 
         lt = max(runs.iloc[-1]['LT Test Top-1'])
-        lt_last =  runs.iloc[-1]['LT Test Top-1'][-1]
+        lt_last = runs.iloc[-1]['LT Test Top-1'][-1]
         curr_run = runs.iloc[-1]
         epoch = runs.iloc[-1]['Epoch']
         cm = plt.cm.Spectral
 
-        def smooth_avg(l,window=10):
-            out = []
-            for i,x in enumerate(l):
-                sub = min(i, window)
-                if i==0:
-                    out.append(x)
-                else:
-                    out.append(np.mean([l[i-j] for j in range(sub)]))
-            return np.array(out)
-
-        def smooth_std(l,window=10):
-            out = []
-            for i,x in enumerate(l):
-                sub = min(i, window)
-                if i==0:
-                    out.append(0)
-                else:
-                    out.append(np.std([l[i-j] for j in range(sub)]))
-            return np.array(out)
-
         def smooth_max(l):
-            out=[max(l[:i+1]) for i,x in enumerate(l)]
+            out = [max(l[:i + 1]) for i, x in enumerate(l)]
             return out
 
-        def fit_curve(xs,ys):
+        def fit_curve(xs, ys):
             start = 50
+
             if len(xs) > start:
                 def func(x, a, b, c): return a + b * np.log(c * x)
+
                 def func2(x, args): return func(x, args[0], args[1], args[2])
+
                 curve = curve_fit(func,
                                   xs[start:],
                                   smooth_max(ys[start:]),
-                                  bounds=[[-np.inf,-np.inf,.0001],np.inf])
+                                  bounds=[[-np.inf, -np.inf, .0001], np.inf])
                 new_x = np.append(np.array(xs), np.arange(max(xs), 600))[start:]
 
                 return new_x, func2(new_x, curve[0])
-            return None,None
+            return None, None
 
+        if self.marker is not None:
+            marker = full_runs[full_runs['ID']==self.marker].iloc[0]['Start Time']
+            labeled = full_runs.sort_values(by='Start Time',ascending=False)
+            labeled = list(labeled[labeled['Start Time'].apply(lambda x: x>=marker)]['ID'])
+        else:
+            labeled = list(full_runs.sort_values(by='Start Time',ascending=False)[:3]['ID'])
+        
         # plot previous runs
         w = 5, 15
-        if epoch!=self.curr_epoch:
+        if epoch != self.curr_epoch:
             self.axes[0].clear()
             self.axes[1].clear()
-            for i, (idx,run) in enumerate(full_runs.iterrows()):
+            for i, (idx, run) in enumerate(full_runs.iterrows()):
+                # print(runs.iloc[-1])
+                if run['ID'] == curr_run['ID']:
+                    continue
                 ys = run['LT Test Top-1']
-                xs = np.array(list(run['Epochs'])[:len(ys)])
-                if min(xs)==0 and max(xs)==518:
-                    xs+=82
-                smooth = False
-                #x_f, y_f = fit_curve(xs, ys)
-                #self.axes[0].plot(x_f, y_f, color=cm(i / len(full_runs)), alpha=.75 if i == 0 else .5)
-                if not smooth:
-                    self.axes[0].plot(xs, smooth_max(ys), color=cm(i / len(full_runs)), alpha=(.75 if i == 0 else .5)+.05)
+                if run['ID'] in labeled:
+                    label = "{}, {}: {}".format(run['ID'],
+                                                run['Start Time'],\
+                                                max(run['LT Test Top-1']))
                 else:
-                    self.axes[0].fill_between(xs,
-                                              smooth_avg(ys, w[0]) - smooth_std(ys, w[1]),
-                                              np.minimum(smooth_max(ys),
-                                                         smooth_avg(ys, w[0]) + smooth_std(ys, w[1])),
-                                              color=cm(i / len(full_runs)),
-                                              alpha=.75 if i == 0 else .5)
-
+                    label=None
+                xs = np.array(list(run['Epochs'])[:len(ys)])
+                if min(xs) == 0 and max(xs) == 518:
+                    xs += 82
+                color = "#68099c" if run['ID'] == self.marker else cm(i / len(full_runs))
+                self.axes[0].plot(xs,
+                                  smooth_max(ys),
+                                  color=color,
+                                  alpha=(.75 if i == 0 else .5) + .05,
+                                  label=label)
+                    
         # plot current run
         if epoch < 0:
             print("No log yet...")
         else:
-            if epoch!=self.curr_epoch:
+            if epoch != self.curr_epoch:
                 print()
                 curr = curr_run['LT Test Top-1'][-1]
                 curr_max = max(curr_run['LT Test Top-1'])
@@ -354,22 +394,34 @@ class TrainAnimator:
                                                                                           curr_arg_max,
                                                                                           rec_max,
                                                                                           rec_arg_max)
-                yrange = 100-min(curr_run['LT Test Top-1'][-10:])
-                self.axes[0].text(-30,100+yrange/15, text, fontsize=8, fontfamily='monospace')
+                yrange = 100 - min(curr_run['LT Test Top-1'][-10:])
+                self.axes[0].text(-30, 100 + yrange / 15, text, fontsize=8, fontfamily='monospace')
                 ys = curr_run['LT Test Top-1']
                 xs = list(curr_run['Epochs'])[:len(ys)]
-
-                self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
+                label = "{} {}: {}".format(curr_run['ID'],curr_run['Start Time'],max(curr_run['LT Test Top-1'])) 
+                self.axes[0].plot(xs, ys, color='k', linewidth=1.5,label=label)
                 x_f, y_f = fit_curve(xs, ys)
                 if x_f is not None:
-                    self.axes[0].plot(x_f, y_f, color='k', linewidth=1.5)
-                #self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
-                self.axes[0].set_ylim(min(curr_run['LT Test Top-1'][-10:])-1, 100)
+                    self.axes[0].plot(x_f, y_f, color='k', alpha=.5, linewidth=1.5, linestyle='--')
+                
+                # self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
+                self.axes[0].set_ylim(min(curr_run['LT Test Top-1'][-10:]) - 1, 100)
                 self.axes[0].set_ylim(90, 100)
                 self.axes[0].set_title("CIFAR-10 Loss History, Bonsai Net")
                 self.axes[0].set_xlabel("Epoch", fontsize=8)
                 self.axes[0].set_ylabel("Accuracy", fontsize=8)
-                self.axes[0].set_yticks(np.arange(int(min(curr_run['LT Test Top-1'][-10:])), 100, 1))
+                self.axes[0].legend()
+                ax_min, ax_max = min(90, int(min(curr_run['LT Test Top-1'][-10:]))), 100
+                if ax_max - ax_min > 20:
+                    div = 5
+                    ax_min = (ax_min // div) * div
+                elif ax_max - ax_min > 15:
+                    div = 2.5
+                    ax_min = (ax_min // div) * div
+                else:
+                    div = 1
+                self.axes[0].set_ylim(ax_min, ax_max)
+                self.axes[0].set_yticks(np.arange(ax_min, ax_max, div))
                 self.axes[0].tick_params(axis='both', which='major', labelsize=8)
                 self.curr_epoch = epoch
 
@@ -392,20 +444,21 @@ def plot_monitor(fn):
         while 1:
             fn(self)
             new_prog = self.update_check()
-            
+
             while new_prog == curr_progress:
                 time.sleep(15)
                 new_prog = self.update_check()
             cleaner()
             curr_progress = self.update_check()
+
     return monitor_loop
 
 
 class PrunePlot:
-    def __init__(self, figsize=(10,4)):
+    def __init__(self, figsize=(10, 4)):
         self.figsize = figsize
         self.col_sets = [
-            ['Train Acc', 'Test LT Acc', 'Test AT Acc'],
+            ['Train Acc', 'Test LT Acc'],
             ['C Loss', 'E Loss', 'I Loss'],
             ['Hard Comp', 'Soft Comp', 'Aim Comp', 'Target Comp'],
             ['Input Comp']
@@ -432,17 +485,18 @@ class PrunePlot:
 
 
 class TrainPlot:
-    def __init__(self, figsize=(10, 4)):
+    def __init__(self, marker=None, figsize=(10, 4)):
         self.figsize = figsize
+        self.marker = marker
         self.update_check = lambda: len(scrape()[0])
 
     def plot(self, resize=False):
         fig = plt.figure(figsize=self.figsize, dpi=125)
-        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1/15])
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1 / 15])
         axes = [plt.subplot(g) for g in gs]
 
         plt.subplots_adjust(left=.05, right=.95, top=.88, bottom=.05, hspace=.15)
-        animator = TrainAnimator(axes)
+        animator = TrainAnimator(axes=axes, marker=self.marker)
         ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
         plt.draw()
         plt.pause(.001)
@@ -457,8 +511,8 @@ class TrainPlot:
 
 
 # === MAIN =============================================================================================================
-if __name__=='__main__':
-    if sys.argv[1]=='p':
+if __name__ == '__main__':
+    if sys.argv[1] == 'p':
         PrunePlot().plot(resize=resize_default)
     else:
         TrainPlot().plot(resize=resize_default)

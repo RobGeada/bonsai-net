@@ -45,6 +45,10 @@ def print_obj_tree(min_elements=None):
             print(f'  {id(referrer)} {referrer.__class__.__qualname__}{info_str}')
 
 
+def size_obj(obj):
+    print(sizeof_fmt(np.prod(obj.size()) * 32 * 8))
+
+
 # === MODEL HELPERS ====================================================================================================
 def schedule_generator(lr):
     return lambda x: {'lr_min': lr['lr_min'], 'lr_max': lr['lr_max'], 't_0': x, 't_mult': 1}
@@ -63,6 +67,9 @@ class LRScheduler:
         self.remaining-=1
         self.lr = (.5 * self.lr_max) * (1 + np.cos((self.t * np.pi) / self.T))
         return self.lr
+    
+    def __repr__(self):
+        return 'LRScheduler @ {:.2f}, {:.2f}->0 over {}/{} epochs'.format(self.lr, self.lr_max, self.t, self.T)
 
     
 def get_n_patterns(patterns, dim, target=None):
@@ -83,18 +90,20 @@ def get_n_patterns(patterns, dim, target=None):
 
 def cell_dims(data_shape, scale, patterns):
     size = list(data_shape)
-    size[1] = 2 ** scale
+    size[1] = scale
     sizes = set()
     for i, pattern in enumerate(patterns):
         for cell in pattern:
             if any(x == 0 for x in size):
                 return sizes
             if i and 'r' in cell:
-                size = channel_mod(size, size[1] * 2)
-                sizes.add(tuple(size))
-                size = width_mod(size, 2)
+                sizes.add(tuple(size+[1]))
+                size = list(channel_mod(size, size[1] * 2))
+                if size[2]>1:
+                    sizes.add(tuple(size+[2]))
+                size = list(width_mod(size, 2))
             else:
-                sizes.add(tuple(size))
+                sizes.add(tuple(size+[1]))
 
 
 def op_sizer(dims, single=True):
@@ -102,7 +111,7 @@ def op_sizer(dims, single=True):
         dims = [dims]
     sizes = {}
     for i,dim in enumerate(dims):
-        print("\rSizing potential cell dim {} of {}...".format(i+1,len(dims)),end="")
+        print("\rSizing potential cell dim {} of {}: {}...".format(i+1,len(dims),dim),end="")
         try:
             path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'sizer.py')
             python = get_python3()
@@ -112,6 +121,7 @@ def op_sizer(dims, single=True):
         except Exception as e:
             print(cmd)
             raise e
+    print()
     return sizes
 
 
@@ -150,6 +160,7 @@ def batch_mod(dim, by):
 
 def cw_mod(dim, by):
     return dim[0], dim[1] * by, dim[2] // by, dim[3] // by
+
 
 # === I/O HELPERS ======================================================================================================
 class BST:
@@ -191,6 +202,7 @@ def looping_generator(l):
         yield l[n % len(l)]
         n += 1
 
+
 def div_remainder(n, interval):
     # finds divisor and remainder given some n/interval
     factor = math.floor(n / interval)
@@ -206,23 +218,39 @@ def namer():
     return " ".join([names[i].strip() for i in choices]).replace("'", "")
 
 
-def sizeof_fmt(num, suffix='B'):
+def sizeof_fmt(num, spacing=True, suffix='B'):
     # turns bytes object into human readable
-    for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
+    if spacing:
+        fmt = "{:>7.2f}{:<3}" 
+    else:
+        fmt = "{:.2f}{}" 
+        
+    for unit in ['', 'Ki','Mi']:
         if abs(num) < 1024.0:
-            return "%3.2f%s%s" % (num, unit, suffix)
+            return fmt.format(num, unit+suffix)
         num /= 1024.0
-    return "%.2f%s%s" % (num, 'Yi', suffix)
+    return fmt.format(num, 'Gi'+suffix)
 
 
-def mem_stats(human_readable=True):
+def cache_stats(human_readable=True, spacing=True):
     # returns current allocated torch memory
     if human_readable:
-        return sizeof_fmt(torch.cuda.memory_cached())
+        return sizeof_fmt(torch.cuda.memory_cached(),spacing)
     else:
         return int(torch.cuda.memory_cached())
 
 
+def mem_stats(human_readable=True, spacing=True):
+    # returns current allocated torch memory
+    if human_readable:
+        return sizeof_fmt(torch.cuda.memory_allocated(),spacing)
+    else:
+        return int(torch.cuda.memory_allocated())
+
+def mem_delta(start):
+    return sizeof_fmt(mem_stats(False)-start)
+    
+    
 def show_time(seconds):
     # show amount of time as human readable
     if seconds < 60:

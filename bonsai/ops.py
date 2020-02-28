@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import math
 import numpy as np
+from torch.autograd import Variable
 
 
 # === OPERATION HELPERS ================================================================================================
@@ -12,7 +13,26 @@ def bracket(ops, ops2=None):
     return nn.Sequential(*out)
 
 
+# from https://github.com/quark0/darts/blob/master/cnn/utils.py
+def drop_path(x, drop_prob):
+    if drop_prob > 0.:
+        keep_prob = 1. - drop_prob
+        mask = Variable(torch.cuda.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob))
+        x.div_(keep_prob)
+        x.mul_(mask)
+    return x
+
+
 # === INDIVIDUAL OPERATIONS ============================================================================================
+class MaxPool(nn.Module):
+    def __init__(self, kernel_size, stride, padding):
+        super().__init__()
+        self.op = nn.MaxPool2d(kernel_size, stride=stride, padding=padding)
+    
+    def forward(self,x):
+        return self.op(x)
+
+
 class SingleConv(nn.Module):
     def __init__(self, c_in, c_out, kernel_size, stride, padding):
         super().__init__()
@@ -24,6 +44,18 @@ class SingleConv(nn.Module):
             self.op = bracket([
                 nn.Conv2d(c_in, c_out, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
             ])
+
+    def forward(self, x):
+        return self.op(x)
+
+
+class DilatedConv(nn.Module):
+    def __init__(self, c_in, c_out, kernel_size, stride, padding):
+        super().__init__()
+        self.op = bracket([
+            nn.Conv2d(c_in, c_in, kernel_size, stride=stride, dilation=2, padding=padding, groups=c_in, bias=False),
+            nn.Conv2d(c_in, c_in, 1, padding=0, bias=False)
+        ])
 
     def forward(self, x):
         return self.op(x)
@@ -46,12 +78,15 @@ class SeparableConv(nn.Module):
 
 
 class Scaler(nn.Module):
-    def __init__(self, by):
+    def __init__(self, c_in, c_out):
         super().__init__()
-        self.by = by
+        self.c_in = c_in
+        self.c_out = c_out
+        self.op = nn.Conv2d(self.c_in, self.c_out, kernel_size=1, stride=1)
 
     def forward(self, x):
-        return torch.cat([x]*self.by,dim=1)
+        return self.op(x)
+        #return torch.cat([x]*self.c_out/self.c_in,dim=1)
 
 
 class MinimumIdentity(nn.Module):
@@ -62,12 +97,12 @@ class MinimumIdentity(nn.Module):
         if stride == 1:
             self.strider = nn.Sequential()
         else:
-            self.strider = nn.MaxPool2d(stride, stride=stride, padding=padsize(stride, stride))
+            self.strider = MaxPool(kernel_size=3, stride=stride, padding=padsize(k=3, s=stride))
 
         if c_in == c_out:
             self.scaler = nn.Sequential()
         else:
-            self.scaler = Scaler(by=c_out//c_in)
+            self.scaler = Scaler(c_in, c_out)
 
     def forward(self, x):
         return self.strider(self.scaler(x))
@@ -110,7 +145,7 @@ class Pruner(nn.Module):
         self.mem_size = mem_size
         self.weight = nn.Parameter(torch.tensor([init]))
         self.m = m
-        self.gate = lambda w: (.5 * w / torch.abs(w)) + .5
+        self.gate = lambda w: torch.sigmoid(self.m*w)
         self.saw = lambda w: (self.m * w - torch.floor(self.m * w)) / self.m
         self.weight_history = [1]
 
@@ -125,9 +160,9 @@ class Pruner(nn.Module):
         self.weight_history.append(self.gate(self.weight).item())
 
     def get_deadhead(self, verbose=False):
-        deadhead = (not np.median(self.weight_history) and not self.weight_history[-1])
+        deadhead = not any(self.weight_history)
         if verbose:
-            print(self.weight_history,deadhead)
+            print(self.weight_history, deadhead)
         self.weight_history = []
         return deadhead
 
@@ -192,7 +227,7 @@ class PrunableInputs(nn.Module):
         else:
             self.zeros = genotype.get('zeros')
 
-        if random_ops is not False:
+        if random_ops is not None:
             self.zeros = [False if np.random.rand()<(random_ops['i_c']/len(self.zeros)) else True for i in self.zeros]
             if all(self.zeros):
                 self.zeros[np.random.choice(range(len(self.zeros)))]=False
@@ -231,6 +266,7 @@ class PrunableInputs(nn.Module):
                 self.ops[i] = Zero(self.strides[i], self.upscales[i])
                 self.zeros[i] = True
                 pruner.deadhead()
+                #self.pruners[i] = None
                 out += 1
         return out
 
@@ -250,9 +286,10 @@ class PrunableInputs(nn.Module):
 
 # === NETWORK UTILITIES ===============================================================================================
 class Classifier(nn.Module):
-    def __init__(self, position, in_size, out_size, scale=False):
+    def __init__(self, position, preserve_aux, in_size, out_size, scale=False):
         super().__init__()
         self.position = position
+        self.preserve_aux = preserve_aux
         if 0:#scale:
             self.scaler = nn.MaxPool2d(3, stride=2, padding=padsize(s=2))
             in_size/=np.array([1,1,2,2])
@@ -287,20 +324,11 @@ def padsize(s=1, k=3, d=1):
 # === SEARCH SPACE =====================================================================================================
 commons = {
     'Identity':     lambda c_in, s: MinimumIdentity(c_in, c_in, stride=s),
+    'Avg_Pool_3x3': lambda c_in, s: nn.AvgPool2d(3, stride=s, padding=padsize(s=s)),
     'Max_Pool_3x3': lambda c_in, s: nn.MaxPool2d(3, stride=s, padding=padsize(s=s)),
-    'Conv_1x1':     lambda c_in, s: SingleConv(c_in, c_in, 1, stride=s, padding=padsize(k=1, s=s)),
     'Sep_Conv_3x3': lambda c_in, s: SeparableConv(c_in, c_in, 3, stride=s, padding=padsize(s=s)),
+    'Sep_Conv_5x5': lambda c_in, s: SeparableConv(c_in, c_in, 5, stride=s, padding=padsize(k=5, s=s)),
+    'Dil_Conv_3x3': lambda c_in, s: DilatedConv(c_in, c_in, 3, stride=s, padding=padsize(d=2, s=s)),
+    'Dil_Conv_5x5': lambda c_in, s: DilatedConv(c_in, c_in, 5, stride=s, padding=padsize(d=2, k=5, s=s)),
 }
-largest = 'Sep_Conv_3x3'
-'''
-commons = {
-    'Identity':     lambda c_in: MinimumIdentity(c_in, c_in, stride=1),
-    'Max_Pool_3x3': lambda c_in: nn.MaxPool2d(3, stride=1, padding=padsize()),
-    'Max_Pool_5x5': lambda c_in: nn.MaxPool2d(5, stride=1, padding=padsize(k=5)),
-    'Max_Pool_7x7': lambda c_in: nn.MaxPool2d(7, stride=1, padding=padsize(k=7)),
-    'Conv_1x1':     lambda c_in: SingleConv(c_in, c_in, 1, stride=1, padding=padsize(k=1)),
-    'Sep_Conv_3x3': lambda c_in: SeparableConv(c_in, c_in, 3, stride=1, padding=padsize()),
-    'Sep_Conv_5x5': lambda c_in: SeparableConv(c_in, c_in, 5, stride=1, padding=padsize(k=5)),
-    'Sep_Conv_7x7': lambda c_in: SeparableConv(c_in, c_in, 7, stride=1, padding=padsize(k=7)),
-}
-'''
+
