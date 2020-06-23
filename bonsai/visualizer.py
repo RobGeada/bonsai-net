@@ -15,7 +15,7 @@ try:
     from pyautogui import hotkey
 
     resize_default = True
-except ImportError as e:
+except (ImportError, KeyError) as e:
     resize_default = False
 
 plt.style.reload_library()
@@ -178,7 +178,12 @@ def time_proc(raw_line):
             run_time = raw_line.split(", ")[-1]
 
         secs = 0
-        if 'm' in run_time:
+        if 'h' in run_time:
+            h = int(run_time.split("h")[0]) * 60 * 60
+            m = int(run_time.split("h")[1].split('m')[0]) * 60
+            s = int(run_time.split("m")[1].split('s')[0])
+            secs = h+m+s
+        elif 'm' in run_time:
             if 'Comp' in run_time:
                 if ' ' not in run_time:
                     run_time = run_time[-6:].replace(",", "")

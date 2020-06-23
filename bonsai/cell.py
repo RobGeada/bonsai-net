@@ -1,4 +1,5 @@
 from bonsai.ops import *
+from bonsai.pruner import *
 from bonsai.helpers import *
 from bonsai.edge import Edge
 
@@ -32,7 +33,7 @@ def operation_allocate(aim_size, num, op_sizes):
 
 
 class Cell(nn.Module):
-    def __init__(self, name, cell_type, dims, nodes, op_sizes, genotype=None, random_ops=False, prune=True):
+    def __init__(self, name, cell_type, dims, nodes,  depth, op_sizes, genotype=None, random_ops=False, prune=True):
         super().__init__()
         self.name = name
         self.cell_type = cell_type
@@ -81,7 +82,7 @@ class Cell(nn.Module):
             allocation = looping_generator([None])
 
         for origin in ['x', 'y']:
-            for target in range(nodes):
+            for target in range(min(depth, nodes)):
                 key = "{}->{}".format(origin, target)
                 edges.append([key, Edge(self.in_dim,
                                         origin,
@@ -96,7 +97,7 @@ class Cell(nn.Module):
 
         # connect data nodes
         for origin in range(nodes):
-            for target in range(origin+1, nodes):
+            for target in range(origin+1, min(origin+1+depth, nodes)):
                 key = "{}->{}".format(origin, target)
                 edges.append([key, Edge(self.in_dim,
                                         origin,
@@ -124,18 +125,15 @@ class Cell(nn.Module):
     
     def forward(self, xs, drop_prob):
         start = time.time()
-        raw_node_ins = {}
         start_mem = mem_stats(False)
-        for node in self.node_names:
-            if node=='x':
-                raw_node_ins[node] = [self.scaler(xs[-1])]
-            elif node=='y':
-                raw_node_ins[node] = [self.input_handler(xs)]
-            else:
-                raw_node_ins[node] = []
-    
+
+        raw_node_ins = {node:[] for node in self.node_names}
+        raw_node_ins['x'] = [self.scaler(xs[-1])]
+        raw_node_ins['y'] = [self.input_handler(xs)]
+
         for node in self.node_names:   
             node_in = self.normalizers[str(node)](sum(raw_node_ins[node]))
+            del raw_node_ins[node]
             if node == self.nodes-1:
                 return node_in
             for key in self.keys_by_origin[node]:

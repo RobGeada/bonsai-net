@@ -8,6 +8,7 @@ import pickle as pkl
 import textwrap
 import time
 
+from bonsai.visualizer import scrape
 from bonsai.ops import commons
 
 plt.style.use('material')
@@ -26,6 +27,9 @@ def color_create():
     hexa = str(hex(50))[2:]
     colors = {
         'Identity': {'hex': '#E53935ff'},
+        'Sigmoid':{'hex':'#ab0000ff'},
+        'BatchNorm':{'hex':'#000000ff'},
+        'ReLU': {'hex':'#7a0000ff'},    
         'Avg_Pool_3x3': {'hex': '#5050ffff'},
         'Max_Pool_3x3': {'hex': '#0000ffff'},
         'Max_Pool_5x5': {'hex': '#0000cfff'},
@@ -34,12 +38,18 @@ def color_create():
         'Conv_3x3': {'hex': '#ffd000ff'},
         'Conv_5x5': {'hex': '#ffb000ff'},
         'Conv_7x7': {'hex': '#ff9000ff'},
+        'SE_8':{'hex':'#ff61adff'},
+        'SE_16':{'hex':'#d44c8eff'},            
         'Sep_Conv_3x3': {'hex': '#961696ff'},
         'Sep_Conv_5x5': {'hex': '#761676ff'},
+        'ISC_3x3': {'hex': '#ff87f5ff'},
+        'ISC_5x5': {'hex': '#d100c0ff'},
         'Sep_Conv_7x7': {'hex': '#561656ff'},
         'Dil_Conv_3x3': {'hex': '#009a46ff'},
         'Dil_Conv_5x5': {'hex': '#007a26ff'},
         'Dil_Conv_7x7': {'hex': '#005a06ff'},
+        'ContConv': {'hex': '#000000ff'},
+        
     }
     colors = {op: v for op, v in colors.items() if op in commons.keys()}
     colors = {op: {'hex': colors[op]['hex'], 'pos': i} for i, op in enumerate(colors.keys())}
@@ -73,13 +83,17 @@ def process(name=None, genotype=None, params=None, g_viz=True):
         p.attr('node', shape='circle', size='1,2')
 
     # get list of cell types from patterns
-    cell_types, cell_positions, loop_idx = [], [], 0
+    cell_types, cell_positions, i, j= [], [], 0, 0
     while len(cell_types) < len(genotype.items()):
-        for i, pattern in enumerate(params['patterns']):
-            for j, cell in enumerate(pattern):
-                cell_positions.append([i + (loop_idx * len(params['patterns'])), j])
-                cell_types.append(cell.upper()  if i else "N")
-        loop_idx += 1
+        for pattern in params['patterns']:
+            for cell in pattern:
+                cell_positions.append([j,i])
+                cell_types.append(cell.upper() if i else "N")
+                i+=1
+                if cell == 'r':
+                    i = 0
+                    j += 1
+                
 
     # iterate through cells and get cell info
     cells = []
@@ -122,12 +136,8 @@ def process(name=None, genotype=None, params=None, g_viz=True):
                             cell[o][t] = [None] * len(colors.keys())
 
                         # remap reduction cell initial identities
-                        if cell_types[i] == 'R' and o <= 1 and v[0] == 'Identity':
-                            op = 'Max_Pool_3x3'
-                            op_pos = colors['Identity']['pos']
-                        else:
-                            op = v[0]
-                            op_pos = colors[op]['pos']
+                        op = v[0]
+                        op_pos = colors[op]['pos']
 
                         # map unpruned operations
                         if weight > 0:
@@ -211,13 +221,22 @@ def plot_cell(cell, n, ax, padding=1, mod=2):
     ax.grid(which='major', b=False)
     ax.grid(which='minor', color='w', linestyle='-', linewidth=2)
 
+    
+def get_op_hists():
+    path = os.getcwd() + "/genotypes"
+    target = max([(file, os.stat(path + "/" + file).st_mtime) for file in os.listdir(path)], key=lambda x: x[1])[0]
+    target = target.replace("_np.pkl", "").replace(".pkl", "")
+    params, genotype = pkl.load(open('genotypes/{}_np.pkl'.format(target), "rb"))
+    for i, (cell_name, cell_genotype) in enumerate(genotype.items()):
+        pass
 
 # === MAIN =============================================================================================================
 def plot(color_bar=False, g_viz=False):
     path = os.getcwd() + "/genotypes"
     target = max([(file, os.stat(path + "/" + file).st_mtime) for file in os.listdir(path)], key=lambda x: x[1])[0]
     target = target.replace("_np.pkl", "").replace(".pkl", "")
-    idx = 0
+
+    #target = 'genotype_Mindanao_Samuelson_Riviera'
     while 1:
         file_mod = os.stat('genotypes/{}.pkl'.format(target)).st_mtime
         colors = color_create()
@@ -234,7 +253,7 @@ def plot(color_bar=False, g_viz=False):
                 plt.text(s * i + s / 2,
                          s / 4, op,
                          color='white',
-                         fontsize=9,
+                         fontsize=100/len(colors),
                          verticalalignment='center',
                          horizontalalignment='center')
             plt.xlim(0, s * len(colors))
@@ -245,29 +264,21 @@ def plot(color_bar=False, g_viz=False):
 
             # plot subplots
             dim = max([cell['pos'][0] for cell in cells]), max([cell['pos'][1] for cell in cells])
+            dim = max(dim[0],1),max(dim[1],1)
             fig, axes = plt.subplots(dim[0] + 1,
                                      dim[1] + 1,
                                      figsize=(16, 9 * (dim[0] + 1)),
                                      dpi=200)
 
             # plot cells in each subplot
-            if dim[0]>0 and dim[1]>0:
-                for a in [col for row in axes for col in row]:
-                    plot_cell(None, n, a)
-                for i, cell in enumerate(cells):
-                    plot_cell(cell, n, axes[cell['pos'][0], cell['pos'][1]])
-            elif dim[0]==0 or dim[1]==0:
-                for a in axes:
-                    plot_cell(None, n, a)
-                for i, cell in enumerate(cells):
-                    plot_cell(cell, n, axes[cell['pos'][1]])
-            else:
-                plot_cell(None, n, axes)
-                for i, cell in enumerate(cells):
-                    plot_cell(cell, n, axes)
+            for a in [col for row in axes for col in row]:
+                plot_cell(None, n, a)
+            for i, cell in enumerate(cells):
+                plot_cell(cell, n, axes[cell['pos'][0], cell['pos'][1]])
+ 
             plt.tight_layout()
-            plt.savefig("chroma_ims/{:03d}.png".format(idx))
-            idx+=1
+            idx = len(scrape()[0])
+            plt.savefig("chroma_ims/{:03d}.png".format(idx), facecolor='#263238', edgecolor='none')
             plt.show()
 
         # catch file errors if no genotype is created yet
@@ -276,3 +287,4 @@ def plot(color_bar=False, g_viz=False):
 
         while file_mod == os.stat('genotypes/{}.pkl'.format(target)).st_mtime:
             time.sleep(1)
+

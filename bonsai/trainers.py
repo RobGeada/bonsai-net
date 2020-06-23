@@ -44,7 +44,7 @@ def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
     if comp_lambda['edge']>0:
         prune_sizes = []
         for cell in model.cells:
-            edge_pruners = [op.pruner.mem_size*op.pruner.sg() if op.pruner else dummy_zero\
+            edge_pruners = [op.pruner.mem_size*torch.clamp(op.pruner.sg(),0.,1.) if op.pruner else dummy_zero\
                                 for key, edge in cell.edges.items() for op in edge.ops]
             prune_sizes += [torch.sum(torch.cat(edge_pruners)).view(-1)]
         edge_comp_ratio = torch.div(torch.cat(prune_sizes), model.edge_sizes)
@@ -57,7 +57,7 @@ def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
     if comp_lambda['input']>0:
         input_sizes = []
         for cell in model.cells:
-            input_pruners = [pruner.sg() if pruner else dummy_zero for pruner in cell.input_handler.pruners]
+            input_pruners = [torch.clamp(pruner.sg(),0,1) if pruner else dummy_zero for pruner in cell.input_handler.pruners]
             input_sizes += [torch.sum(torch.cat(input_pruners)).view(-1)]
         input_comp_ratio = torch.div(torch.cat(input_sizes), model.input_p_tot)
         input_comp = torch.norm(1/model.input_p_tot - input_comp_ratio)
@@ -298,7 +298,7 @@ def full_train(model, epochs=None, **kwargs):
             comp_lambda = {k: v*2**tries for k, v in kwargs['comp_lambdas'].items()}
         else:
             comp_lambda = None
-        train(model, device, criterion=criterion, optimizer=optimizer, epoch=epoch, comp_lambda=comp_lambda, **kwargs)
+        train(model, device, criterion=criterion, optimizer=optimizer, epoch=epoch, comp_lambda=comp_lambda, **kwargs) 
         model.save_genotype()
 
         # prune ==============================
@@ -310,8 +310,7 @@ def full_train(model, epochs=None, **kwargs):
                             for pruner in cell.input_handler.pruners if pruner]
             [pruner.track_gates() for pruner in edge_pruners + input_pruners]
 
-            if epoch and not (epoch + 1) % kwargs['nas_schedule']['prune_interval']:
-                model.deadhead()
+            model.deadhead(kwargs['nas_schedule']['prune_interval'])
 
             hard, soft = model.genotype_compression()[:2]
             if soft and hard:

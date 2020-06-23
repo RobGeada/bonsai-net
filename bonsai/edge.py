@@ -1,3 +1,4 @@
+from bonsai.pruner import *
 from bonsai.ops import *
 from bonsai.helpers import *
 
@@ -7,18 +8,21 @@ class Edge(nn.Module):
         super().__init__()
         self.stride = stride
         if genotype is not None:
-            available_ops = {k: commons[k] for (k, weight) in genotype}
-            op_weights = [weight for (k, weight) in genotype]
+            available_ops = {k:commons[k] for k,_ in genotype}
+            op_weights = {k:None for k,_ in genotype}
+            self.used = sum([op_sizes[k] for k,_ in genotype])
+            self.possible = sum(op_sizes.values())
+
         elif allocation is not None:
             available_ops = {k: commons[k] for k in allocation}
             self.used = sum([op_sizes[k] for k in allocation])
             self.possible = sum(op_sizes.values())
-            op_weights = [1.]*len(available_ops)
+            op_weights = {k: None for k in allocation}
         else:
             available_ops = commons
-            self.used = sum([v for k, v in op_sizes.items()])
-            self.possible = sum(op_sizes.values())
-            op_weights = [None]*len(commons)
+            self.used = sum(op_sizes.values())
+            self.possible = self.used
+            op_weights = {k: None for k in commons.keys()}
 
         self.ops = []
         for i, (key, op) in enumerate(available_ops.items()):
@@ -27,7 +31,7 @@ class Edge(nn.Module):
                                          c_in=dim[1],
                                          mem_size=op_sizes[key],
                                          stride=stride,
-                                         pruner_init=op_weights[i],
+                                         pruner_init=op_weights[key],
                                          prune=prune)
             self.ops.append(prune_op)
         self.ops = nn.ModuleList(self.ops)
@@ -41,8 +45,8 @@ class Edge(nn.Module):
             self.normalizer = nn.BatchNorm2d(dim[1])
         self.zero = Zero(stride=self.stride)
 
-    def deadhead(self):
-        dhs = sum([op.deadhead() for i, op in enumerate(self.ops)])
+    def deadhead(self, prune_interval):
+        dhs = sum([op.deadhead(prune_interval) for i, op in enumerate(self.ops)])
         self.used = sum([op.pruner.mem_size for op in self.ops if not op.zero])
         self.num_ops -= dhs
         if self.num_ops == 0:

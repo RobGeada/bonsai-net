@@ -17,6 +17,7 @@ class Net(nn.Module):
         self.scale = kwargs['scale']
         self.patterns = looping_generator(kwargs['patterns'])
         self.nodes = kwargs['nodes']
+        self.depth = kwargs['depth']
         self.prune = {'edge':kwargs.get('prune', True), 'input':kwargs.get('prune',True)}
         self.classes = kwargs['classes']
         self.drop_prob = kwargs['drop_prob']
@@ -41,22 +42,22 @@ class Net(nn.Module):
         self.cells, self.cell_types, self.edges = None, {}, None
         if any(self.prune.values()):
             self.edge_p_tot, self.input_p_tot = None, None
-        self.global_pooling = None
 
         # build cells
         self.cell_idx = 0
-        cell_dim_set = cell_dims(self.dim, self.scale, looping_generator(kwargs['patterns']))
+        cell_dim_set = cell_dims(self.dim, self.scale, looping_generator(kwargs['patterns']), kwargs['total_patterns'])
         size_set = compute_sizes()
         op_match = (len(size_set)>0) and all([op in list(size_set.values())[0].keys() for op in commons])
         if not op_match or not all([dim in size_set for dim in cell_dim_set]):
             size_set = compute_sizes(cell_dim_set)
+        size_set = {dim:{k:v for k,v in ops.items() if k in commons} for dim,ops in size_set.items()}
         self.size_set = size_set
 
         self.pattern_params = {}
         for pattern in range(kwargs['num_patterns']):
             self.add_pattern(random_ops=kwargs.get('random_ops'))
 
-    def add_cell(self, cell_type, preserve_aux, classifier, prune=None, scale=False, random_ops=None):
+    def add_cell(self, cell_type, preserve_aux, classifier, prune=None, random_ops=None):
         if prune is None:
             prune = self.prune
         cell_type = 'Normal' if len(self.dims) == 1 else cell_type
@@ -70,6 +71,7 @@ class Net(nn.Module):
                         cell_type,
                         self.dims,
                         self.nodes,
+                        self.depth,
                         genotype=cell_genotype,
                         op_sizes=self.size_set,
                         random_ops=random_ops,
@@ -97,8 +99,7 @@ class Net(nn.Module):
             self.towers['Classifier'] = Classifier(len(self.dims) - 2,
                                                    preserve_aux,
                                                    self.dim,
-                                                   self.classes,
-                                                   scale=scale)
+                                                   self.classes)
             new_params += list(self.towers['Classifier'].parameters())
         self.track_params()
         return new_params, removed_params
@@ -112,13 +113,11 @@ class Net(nn.Module):
         for i, cell in enumerate(next_pattern):
             cell_type = 'Normal' if 'n' in cell else 'Reduction'
             preserve_aux = 'a' in cell
-            scale = 's' in cell
             classifier = i == len(next_pattern)-1
             new_params, removed_params = self.add_cell(cell_type,
                                                        prune=prune,
                                                        preserve_aux=preserve_aux,
                                                        classifier=classifier,
-                                                       scale=scale,
                                                        random_ops=random_ops)
             pattern_params += new_params
             pattern_removals += removed_params
@@ -128,7 +127,10 @@ class Net(nn.Module):
         p_key = 'init' if not self.pattern_params else epochs_remaining            
         int_keys = [x for x in self.pattern_params.keys() if type(x) is int]
         prev_key = min(int_keys) if len(int_keys)>1 else 'init'
-        self.pattern_params[p_key] = pattern_params
+        
+        if self.pattern_params.get(p_key) is None:
+            self.pattern_params[p_key] = []
+        self.pattern_params[p_key] += pattern_params
         
         if prev_key!=p_key:
             new_prev_params = []
@@ -151,14 +153,14 @@ class Net(nn.Module):
                 self.edge_p_tot = torch.Tensor([len(commons) * len(cell.edges) for cell in self.cells]).cuda()
                 self.edge_sizes = []
                 for cell in self.cells:
-                    cell_sizes = sum([op.pruner.mem_size if op.pruner else 0 for k, edge in cell.edges.items() for op in edge.ops])
+                    cell_sizes = sum([edge.possible for k, edge in cell.edges.items()])
                     self.edge_sizes.append(cell_sizes)
                 self.edge_sizes = torch.Tensor(self.edge_sizes).cuda()
 
             if self.prune['input']:
                 self.input_p_tot = torch.Tensor(self.dim_counts).cuda()
             self.save_genotype()
-        self.global_pooling = nn.AdaptiveAvgPool2d(self.dim[1:][-1])
+
 
     def remove_pruners(self, remove_input=False, remove_edge=False):
         self.prune = {'edge': self.prune['edge'] and not remove_edge, 'input': self.prune['input'] and not remove_input}
@@ -199,28 +201,25 @@ class Net(nn.Module):
                     self.jn_print("Tower {}: {}".format(i,cache_stats()))
             xs.append(x)
         start_mem = mem_stats(False)
-        x = self.global_pooling(xs[-1])
-        if verbose:
-            self.jn_print("GP: {}".format(cache_stats()))
         outputs.append(self.towers['Classifier'](x))
         start_mem = mem_stats(False)
         if verbose:
             self.jn_print("Classifier: {}".format(cache_stats()))
         return outputs if auxiliary else outputs[-1]
 
-    def deadhead(self):
+    def deadhead(self, prune_interval):
         old_params = general_num_params(self)
         deadheads = 0
         if self.prune['edge']:
-            deadheads += sum([cell.edges[key].deadhead() for cell in self.cells for key in cell.edges])
+            deadheads += sum([cell.edges[key].deadhead(prune_interval) for cell in self.cells for key in cell.edges])
         if self.prune['input']:
-            deadheads += sum([cell.input_handler.deadhead() for cell in self.cells])
+            deadheads += sum([cell.input_handler.deadhead(prune_interval) for cell in self.cells])
         self.log_print("\nDeadheaded {} operations".format(deadheads))
         self.log_print("Param Delta: {:,} -> {:,}".format(old_params, general_num_params(self)))
         clean("Deadhead",verbose=False)
         self.save_genotype()
 
-    def extract_genotype(self, tensors=True):
+    def extract_genotype(self, weights=True, tensors=True):
         if tensors:
             def conversion(x): return x.weight if x else -np.inf
         else:
@@ -233,15 +232,22 @@ class Net(nn.Module):
             # edge genotype
             for key, edge in cell.edges.items():
                 if self.prune['edge']:
-                    edge_params = [[str(op), conversion(op.pruner)] for op in edge.ops if not op.zero]
+                    if weights:
+                        edge_params = [[str(op), conversion(op.pruner)] for op in edge.ops if not op.zero]
+                    else:
+                        edge_params = [[str(op), None] for op in edge.ops if not op.zero]
                 else:
                     edge_params = [[str(op), 1] for op in edge.ops if not op.zero]
                 cell_genotype["{}->{}".format(edge.origin, edge.target)] = edge_params
 
             # input genotype
             if self.prune['input']:
-                cell_genotype['Y'] = {'weights': [conversion(pruner) for pruner in cell.input_handler.pruners],
-                                      'zeros': cell.input_handler.zeros}
+                if weights:
+                    cell_genotype['Y'] = {'weights': [conversion(pruner) for pruner in cell.input_handler.pruners],
+                                          'zeros': cell.input_handler.zeros}
+                else:
+                    cell_genotype['Y'] = {'weights': [None for pruner in cell.input_handler.pruners],
+                                          'zeros': cell.input_handler.zeros}
             else:
                 cell_genotype['Y'] = {'zeros': cell.input_handler.zeros}
             cell_genotypes[cell.name] = cell_genotype
@@ -250,7 +256,7 @@ class Net(nn.Module):
 
     def save_genotype(self):
         id_str = self.model_id.replace(" ","_")
-        pkl.dump(self.extract_genotype(), open('genotypes/genotype_{}.pkl'.format(id_str), 'wb'))
+        torch.save(self.extract_genotype(), open('genotypes/genotype_{}.pkl'.format(id_str), 'wb'))
         pkl.dump(self.extract_genotype(tensors=False), open('genotypes/genotype_{}_np.pkl'.format(id_str), 'wb'))
 
     def genotype_compression(self, used_ratio=False):

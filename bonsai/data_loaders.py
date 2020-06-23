@@ -46,7 +46,7 @@ class Cutout:
         ymin = max(0, ymin)
         xmax = min(w, xmax)
         ymax = min(h, ymax)
-        image[ymin:ymax, xmin:xmax] = self.mask_color
+        image[ymin:ymax, xmin:xmax] = self.mask_color[0]*255.
         return image
 
 
@@ -62,7 +62,7 @@ def load_data(batch_size, dataset, metadata=None):
 
         train_data = datasets.CIFAR10(data_path+dataset,
                                       train=True,
-                                      download=False,
+                                      download=download,
                                       transform=transforms.Compose([
                                           transforms.RandomCrop(32, padding=4),
                                           transforms.RandomHorizontalFlip(),
@@ -72,19 +72,28 @@ def load_data(batch_size, dataset, metadata=None):
                                       ))
         test_data = datasets.CIFAR10(data_path+dataset,
                                      train=False,
-                                     download=False,
+                                     download=download,
                                      transform=transforms.Compose([
                                          transforms.ToTensor(),
                                          transforms.Normalize(MEAN, STD)]
                                      ))
-
-        train_loader = torch.utils.data.DataLoader(train_data,
-                                                   batch_size=batch_size,
-                                                   shuffle=True)
-        test_loader = torch.utils.data.DataLoader(test_data,
-                                                  batch_size=batch_size,
-                                                  shuffle=False)
-    elif dataset is 'ImageNet':
+    elif dataset == "MNIST":
+        train_data = datasets.MNIST(data_path+dataset,
+                                    train=True, 
+                                    download=download,
+                                    transform=transforms.Compose([
+                                        transforms.ToTensor(),
+                                        transforms.Normalize((0.1307,), (0.3081,))]
+                                    ))
+        test_data = datasets.MNIST(data_path+dataset, 
+                                   train=False,
+                                   download=download,
+                                   transform=transforms.Compose([
+                                       transforms.ToTensor(),
+                                       transforms.Normalize((0.1307,), (0.3081,))]
+                                   ))
+        
+    elif dataset == 'ImageNet':
         MEAN = [0.485, 0.456, 0.406]
         STD  = [0.229, 0.224, 0.225]
 
@@ -92,7 +101,7 @@ def load_data(batch_size, dataset, metadata=None):
                                       split='train',
                                       download=False,
                                       transform=transforms.Compose([
-                                          transforms.RandomResizedCrop(224),
+                                          transforms.RandomResizedCrop(112),
                                           transforms.RandomHorizontalFlip(),
                                           transforms.ColorJitter(
                                               brightness=0.4,
@@ -106,36 +115,45 @@ def load_data(batch_size, dataset, metadata=None):
                                      split='val',
                                      download=False,
                                      transform=transforms.Compose([
-                                         transforms.Resize(256),
-                                         transforms.CenterCrop(224),
+                                         transforms.Resize(128),
+                                         transforms.CenterCrop(112),
                                          transforms.ToTensor(),
                                          transforms.Normalize(MEAN, STD)]
                                      ))
-
-        train_loader = torch.utils.data.DataLoader(train_data,
-                                                   batch_size=batch_size,
-                                                   shuffle=True)
-        test_loader = torch.utils.data.DataLoader(test_data,
-                                                  batch_size=batch_size,
-                                                  shuffle=False)
     else:
         raise ValueError("No matching dataset configuration: {}".format(dataset))
 
+    train_loader = torch.utils.data.DataLoader(train_data,
+                                               batch_size=batch_size,
+                                               shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_data,
+                                              batch_size=batch_size,
+                                              shuffle=False)
+        
     # get/load dataset metadata
     for img, target in train_loader:
         data_shape = img.shape
         break
 
-    return (train_loader, test_loader), data_shape
+    return [train_loader, test_loader], data_shape
 
 
 # === AUGMENTATION PREVIEW =============================================================================================
+def vis_im(im):
+    plt.figure(figsize=(1,1))
+    t_image = im.transpose(0,2).transpose(0,1)
+    t_image = (t_image-torch.min(t_image))/(torch.max(t_image)-torch.min(t_image))
+    plt.imshow(t_image)
+
 def visualize_loader(loader):
     plt.figure()
     for data, target in loader:
         for i, image in enumerate(data[0:9]):
+            print(torch.min(image),torch.max(image),torch.mean(image))
             ax = plt.subplot(3,3,i+1)
             t_image = image.transpose(0,2).transpose(0,1)
+            t_image = (t_image-torch.min(t_image))/(torch.max(t_image)-torch.min(t_image))
+            print(torch.min(t_image),torch.max(t_image),torch.mean(t_image))
             ax.imshow(t_image)
             ax.axis('off')
         break

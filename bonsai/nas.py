@@ -16,9 +16,15 @@ def jn_print(x,end="\n"):
 def gen_compression_targets(hypers):
     sizes = {}
     print("Search Range: {:.2f}->{:.2f}".format(1 / len(commons), 1.))
-    for n in range(1, hypers['num_patterns']):
+    init_size = sp_size_test(1, e_c=1, add_pattern=0, remove_prune=False, **hypers)
+    jn_print('First pattern: {}'.format(init_size[0]))
+    if init_size[0]>hypers['gpu_space']:
+        jn_print("First pattern too large for GPU!")
+        return [], 0
+    
+    for n in range(1, hypers['total_patterns']):
         sizes[n] = []
-        bst = BST(1 / len(commons), 1.)
+        bst = BST(1 / (len(commons)), 1., depth=6)
         while bst.answer is None:
             print("{}: {:.3f}\r".format(n, bst.pos), end="")
             queries = []
@@ -28,13 +34,14 @@ def gen_compression_targets(hypers):
             bst.query(any(queries))
         if bst.passes:
             sizes[n] = max(bst.passes)
+        print()
 
     if any([v for (k, v) in sizes.items() if v == 1]):
         start_size = [k for (k, v) in sizes.items() if v == 1][-1] + 1
     else:
         start_size = 1
 
-    jn_print("Comp Ratios:\nsizes={{\n{}\n}}".format("\n".join(["    {}:{},".format(k, v) for (k, v) in sizes.items()])))
+    jn_print("Comp Ratios:\nsizes={{\n{}\n}},".format("\n".join(["    {}:{},".format(k, v) for (k, v) in sizes.items()])))
     jn_print("start_size={}".format(start_size))
     jn_print("Effective Scale: {:.2f}".format(hypers['scale']*sizes[max(sizes.keys())]*len(commons)))
     return sizes, start_size
@@ -45,12 +52,11 @@ class Bonsai:
     def __init__(self, hypers, sizes=None, start_size=None):
         wipe_output()
         self.hypers = hypers
-        self.id = namer()
+        self.model_id = namer()
         self.data, self.dim = load_data(hypers['batch_size'], hypers['dataset']['name'])
-        self.hypers['num_patterns'] = get_n_patterns(hypers['patterns'],
-                                                     self.dim,
-                                                     hypers['reduction_target']) + 1
-
+        self.hypers['total_patterns'] = get_n_patterns(hypers['patterns'],
+                                                       self.dim,
+                                                       hypers['reduction_target']) + hypers['post_patterns']
         if sizes is None:
             jn_print("== Determining compression ratios ==")
             self.sizes, self.start_size = gen_compression_targets(hypers)
@@ -72,12 +78,12 @@ class Bonsai:
             if self.random==1:
                 random_ops = {'e_c': self.e_c[-2], 'i_c': self.i_c[-2]}
                 prune = True
-                num_patterns =  self.hypers['num_patterns']-1
+                num_patterns =  self.hypers['total_patterns']-1
             else:
                 random_ops = {'e_c': self.e_c[-1], 'i_c': self.i_c[-1]}
                 prune = self.random==2
-                num_patterns = self.hypers['num_patterns']
-            model_id = self.id + '_r{}'.format(self.random)
+                num_patterns = self.hypers['total_patterns']
+            model_id = self.model_id + '_r{}'.format(self.random)
             jn_print("Generating model at random level {}, e_c={}, i_c={}, prune={}".format(
                     self.random,
                     random_ops['e_c'],
@@ -87,6 +93,7 @@ class Bonsai:
             random_ops = None
             prune = True
             num_patterns = self.start_size
+            model_id = self.model_id
             
         self.model = Net(
             dim=self.dim,
@@ -94,7 +101,9 @@ class Bonsai:
             scale=self.hypers['scale'],
             patterns=self.hypers['patterns'],
             num_patterns=num_patterns,
+            total_patterns=self.hypers['total_patterns'],
             nodes=self.hypers['nodes'],
+            depth=self.hypers['depth'],
             random_ops=random_ops,
             prune=prune,
             model_id = model_id,
@@ -106,6 +115,27 @@ class Bonsai:
         
         self.model.data = self.data
 
+    def reinit(self):
+        num_patterns = len(self.model.pattern_params)
+        self.start_size = num_patterns
+        genotype = self.model.extract_genotype(weights=False)[1]
+        self.model = Net(
+            dim=self.dim,
+            genotype=genotype,
+            classes=self.hypers['dataset']['classes'],
+            scale=self.hypers['scale'],
+            patterns=self.hypers['patterns'],
+            num_patterns=num_patterns,
+            total_patterns=self.hypers['total_patterns'],
+            nodes=self.hypers['nodes'],
+            depth=self.hypers['depth'],
+            random_ops=None,
+            prune=True,
+            model_id = self.model_id,
+            drop_prob=self.hypers['drop_prob'],
+            lr_schedule=self.hypers['lr_schedule'])
+        self.model.data = self.data
+        
     def track_compression(self):
         _, e_c, i_c = self.model.genotype_compression()
         self.e_c.append(e_c)
@@ -118,7 +148,7 @@ class Bonsai:
         if not self.random:
             # search
             search_start = time.time()
-            for n in range(self.start_size, self.hypers['num_patterns']):
+            for n in range(self.start_size, self.hypers['total_patterns']):
                 jn_print(str(self.model))
                 comp_ratio = self.sizes.get(n, 0)
                 aim = comp_ratio * (.9 if self.sizes.get(n, 0) > .35 else .66)
@@ -132,17 +162,19 @@ class Bonsai:
                                         nas_schedule=self.hypers['nas_schedule'])
                 clean(verbose=False)
                 if met_thresh:
-                    if n != self.hypers['num_patterns']:
+                    if n != self.hypers['total_patterns']:
                         jn_print("Adding next pattern: {}".format(n + 1))
                         self.track_compression()
                         self.model.add_pattern()
+                    return n+1
                 if not self.model.lr_schedulers['init'].remaining:
-                    break
+                    return n
 
             # print search stats
             clean("Search End")
             jn_print("Search Time: {}".format(show_time(time.time() - search_start)))
-            jn_print("Edge Comp: {} Input Comp: {}".format(self.e_c[-1], self.i_c[-1]))
+            if len(self.e_c):
+                jn_print("Edge Comp: {} Input Comp: {}".format(self.e_c[-1], self.i_c[-1]))
             jn_print(str(self.model))
         else:
             jn_print(str(self.model))

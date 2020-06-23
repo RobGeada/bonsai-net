@@ -9,7 +9,8 @@ import torch.nn as nn
 from bonsai.data_loaders import load_data
 from bonsai.helpers import mem_stats, clean, sizeof_fmt
 from bonsai.net import Net
-from bonsai.ops import commons, PrunableOperation
+from bonsai.ops import commons
+from bonsai.pruner import PrunableOperation
 from bonsai.trainers import size_test
 
 
@@ -26,7 +27,7 @@ if __name__ == '__main__':
         # build op
         op_mems = {}
         input_tensor = torch.zeros(dim,requires_grad=True).cuda()
-        trials = 25
+        trials = 5
 
         for op, f in commons.items():
             sizes = []
@@ -50,25 +51,29 @@ if __name__ == '__main__':
         # get size of entire model
         with open("pickles/size_test_in.pkl", "rb") as f:
             [n, e_c, add_pattern, prune, kwargs] = pkl.load(f)
-
         data, dim = load_data(kwargs['batch_size'], kwargs['dataset']['name'])
         model = Net(dim=dim,
                     classes=kwargs['dataset']['classes'],
                     scale=kwargs['scale'],
                     patterns=kwargs['patterns'],
                     num_patterns=n,
+                    total_patterns=kwargs['total_patterns'],
                     random_ops={'e_c': e_c, 'i_c': 1.},
                     nodes=kwargs['nodes'],
+                    depth=kwargs['depth'],
                     drop_prob=.3,
                     lr_schedule=kwargs['lr_schedule'],
                     prune=True)
+        
         model.data = data
 
         if kwargs.get('remove_prune') is True:
             model.remove_pruners(remove_input=True, remove_edge=True)
             model.add_pattern(full_ops=True)
+            print(model)
         elif add_pattern:
-            model.add_pattern(prune=prune, random_ops={'e_c': add_pattern, 'i_c':100})
+            model.add_pattern(prune=prune)
+            print(model)
         if kwargs.get('detail', False):
             model.detail_print()
         if kwargs.get('print_model', False):
