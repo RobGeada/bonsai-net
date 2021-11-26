@@ -40,7 +40,7 @@ class Zero(nn.Module):
         self.stride = stride
         self.upscale = upscale
         if stride == 1 and upscale == 1:
-            self.op = lambda x: torch.zeros_like(x)
+            self.op = lambda x: x*0
         else:
             self.op = lambda x: torch.zeros(dim_mod(x.shape, upscale, stride),
                                             device=torch.device('cuda'),
@@ -120,6 +120,30 @@ class Classifier(nn.Module):
         # darts version
         self.op = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
+            NNView(),
+            nn.Linear(in_size[1], out_size)
+        )
+
+    def forward(self, x):
+        return self.op(x)
+    
+class ImageNetClassifier(nn.Module):
+    def __init__(self, position, preserve_aux, in_size, out_size):
+        super().__init__()
+        self.position = position
+        self.preserve_aux = preserve_aux
+        
+        
+#         # bonsai paper version
+#         self.op = nn.Sequential(
+#             nn.AdaptiveAvgPool2d(in_size[1:][-1]),
+#             NNView(),
+#             nn.Linear(int(np.prod(in_size[1:])), out_size)
+#         )
+        
+        # darts version
+        self.op = nn.Sequential(
+            nn.AvgPool2d(7),
             NNView(),
             nn.Linear(in_size[1], out_size)
         )
@@ -293,6 +317,24 @@ def padder(c_in, c_out, stride=1):
 
 def initializer(c_in, c_out):
     return SingleConv(c_in, c_out, kernel_size=1, stride=1, padding=padsize(k=1, s=1))
+
+class ImageNetInitializer(nn.Module):
+    def __init__(self, c_in, c_out):
+        super().__init__()
+        self.op = nn.Sequential(
+            nn.Conv2d(c_in, c_out//2, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c_out//2),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(c_out//2, c_out, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c_out),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(c_out, c_out, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c_out)
+        )
+    def forward(self, x):
+        out = self.op(x)
+        return out
+       
 
 
 def normalizer(c_in):

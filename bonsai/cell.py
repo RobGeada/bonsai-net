@@ -7,9 +7,9 @@ import time
 import numpy as np
 
 
-def operation_allocate(aim_size, num, op_sizes):
+def operation_allocate(aim_size, num, op_sizes, metric=0):
     if num:
-        alloc = [[(k, "{}_{}".format(k,i ), i, v) for k, v in op_sizes.items()] for i in range(num)]
+        alloc = [[(k, "{}_{}".format(k,i ), i, size) for k, size in op_sizes.items()] for i in range(num)]
         flat_alloc = [op for edge in alloc for op in edge]
         out = []
         while sum([x[-1] for x in out]) < aim_size:
@@ -17,12 +17,18 @@ def operation_allocate(aim_size, num, op_sizes):
                 break
             out_sum = sum([x[-1] for x in out])
             idx_size = np.inf
-            min_size = min([x[-1] for x in flat_alloc])
+            min_size = min([x[-1] for x in flat_alloc if x[-1]!=0])
             if aim_size < out_sum + min_size:
                 break
-            while aim_size < out_sum + idx_size:
-                idx = np.random.choice([x[1] for x in flat_alloc], 1)
-                idx_size = [x[-1] for x in flat_alloc if x[1] == idx][0]
+            print(metric)
+            available = [x for x in flat_alloc if out_sum + x[-1] <= aim_size and x[-1]!=0] 
+            if metric==1:
+                idx = np.random.choice([x[1] for x in available]) #random
+            elif metric == 2:
+                idx = sorted(available, key=lambda x: x[-1], reverse=True)[0][1] # max
+            elif metric == 0:
+                idx = sorted(available, key=lambda x: x[-1], reverse=False)[0][1] # min
+            idx_size = [x[-1] for x in flat_alloc if x[1] == idx][0]
             out += [x for x in flat_alloc if x[1] == idx]
             flat_alloc = [x for x in flat_alloc if x[1] != idx]
         output = [[x[0] for x in out if x[2] == i] for i in range(num)]
@@ -33,20 +39,20 @@ def operation_allocate(aim_size, num, op_sizes):
 
 
 class Cell(nn.Module):
-    def __init__(self, name, cell_type, dims, nodes,  depth, op_sizes, genotype=None, random_ops=False, prune=True):
+    def __init__(self, name, cell_type, dims, nodes,  depth, op_sizes, metric, genotype=None, random_ops=False, prune=True):
         super().__init__()
         self.name = name
         self.cell_type = cell_type
         self.nodes = nodes
         self.dims = dims
         self.input_handler = PrunableInputs(dims,
-                                            scale_mod=1 if self.cell_type is 'Normal' else 2,
+                                            scale_mod=1 if self.cell_type=='Normal' else 2,
                                             genotype={} if genotype is None else genotype['Y'],
                                             random_ops=random_ops,
                                             prune=prune)
         self.in_dim = channel_mod(dims[-1], dims[-1][1] if cell_type == 'Normal' else dims[-1][1]*2)
         self.scaler = MinimumIdentity(dims[-1][1],
-                                      dims[-1][1] * (2 if self.cell_type is 'Reduction' else 1),
+                                      dims[-1][1] * (2 if self.cell_type=='Reduction' else 1),
                                       stride=1)
 
         edges = []
@@ -56,8 +62,8 @@ class Cell(nn.Module):
         self.cell_size_est = 0
         stride=1 if cell_type == 'Normal' else 2
         if random_ops is not None:
-            cell_cnx = sum([1 for origin in ['x', 'y'] for target in range(nodes)])
-            cell_cnx += sum([1 for origin in range(nodes) for target in range(origin + 1, nodes)])
+            input_cell_cnx = sum([1 for origin in ['x', 'y'] for target in range(min(depth, nodes))])
+            cell_cnx = input_cell_cnx + sum([1 for origin in range(nodes) for target in range(origin + 1, min(origin+1+depth, nodes))])
 
             strided_op_sizes = op_sizes[self.in_dim + (stride,)]
             strided_size = sum(strided_op_sizes.values())
@@ -68,15 +74,16 @@ class Cell(nn.Module):
                 unstrided_size = 0
                 unstrided_op_sizes = {}
             else:
-                num_strided = 2*nodes
+                num_strided = input_cell_cnx
                 unstrided_op_sizes = op_sizes[width_mod(self.in_dim,2)+(1,)]
                 unstrided_size = sum(unstrided_op_sizes.values())
                 num_unstrided = cell_cnx-num_strided
-
+            
             strided_aim_size = num_strided*random_ops['e_c']*strided_size
+
             unstrided_aim_size = num_unstrided*random_ops['e_c']*unstrided_size
-            strided_ops = operation_allocate(strided_aim_size, num_strided, strided_op_sizes)
-            unstrided_ops = operation_allocate(unstrided_aim_size, num_unstrided, unstrided_op_sizes)
+            strided_ops = operation_allocate(strided_aim_size, num_strided, strided_op_sizes, metric)
+            unstrided_ops = operation_allocate(unstrided_aim_size, num_unstrided, unstrided_op_sizes, metric)
             allocation = (x for x in strided_ops+unstrided_ops)
         else:
             allocation = looping_generator([None])
@@ -123,7 +130,8 @@ class Cell(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
     
-    def forward(self, xs, drop_prob):
+
+    def forward(self, xs,drop_prob, fw_type='b'):
         start = time.time()
         start_mem = mem_stats(False)
 
@@ -132,12 +140,16 @@ class Cell(nn.Module):
         raw_node_ins['y'] = [self.input_handler(xs)]
 
         for node in self.node_names:   
-            node_in = self.normalizers[str(node)](sum(raw_node_ins[node]))
-            del raw_node_ins[node]
+            rnis = raw_node_ins[node]
+            if len(rnis) > 1:
+                node_in = self.normalizers[str(node)](sum(rnis[1:], rnis[0]))
+            else:
+                node_in = self.normalizers[str(node)](rnis[0])
+            del raw_node_ins[node], rnis
             if node == self.nodes-1:
                 return node_in
             for key in self.keys_by_origin[node]:
-                raw_node_ins[self.key_ots[key][1]].append(self.edges[key](node_in, drop_prob))
+                raw_node_ins[self.key_ots[key][1]] += self.edges[key](node_in, drop_prob, fw_type)
 
     def genotype_compression(self, soft_ops=0, hard_ops=0, used_ratio=False):
         if not used_ratio:

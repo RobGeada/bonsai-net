@@ -6,7 +6,11 @@ from matplotlib import gridspec
 import numpy as np
 import time
 import re
-from bonsai.helpers import show_time
+import os
+try:
+    from helpers import show_time
+except ImportError as e:
+    from bonsai.helpers import show_time
 from scipy.optimize import curve_fit
 import sys
 
@@ -372,6 +376,8 @@ class TrainAnimator:
                 if min(xs) == 0 and max(xs) == 518:
                     xs += 82
                 color = "#68099c" if run['ID'] == self.marker else cm(i / len(full_runs))
+
+                           
                 self.axes[0].plot(xs,
                                   smooth_max(ys),
                                   color=color,
@@ -387,7 +393,12 @@ class TrainAnimator:
                 curr = curr_run['LT Test Top-1'][-1]
                 curr_max = max(curr_run['LT Test Top-1'])
                 curr_arg_max = np.argmax(curr_run['LT Test Top-1'])
-                rec, rec_max, rec_arg_max = compare[epoch], max(compare[:epoch + 1]), np.argmax(compare[:epoch + 1])
+                try:
+                    rec, rec_max, rec_arg_max = compare[epoch], max(compare[:epoch + 1]), np.argmax(compare[:epoch + 1])
+                except IndexError as e:
+                    rec = compare[epoch-1]
+                    rec_max = max(compare[:epoch])
+                    rec_arg_max = np.argmax(compare[:epoch])
 
                 text = "==== EPOCH {} ======================================\n".format(epoch)
                 text += "LT Max: {}\n".format(lt)

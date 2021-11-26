@@ -99,7 +99,7 @@ def cell_dims(data_shape, scale, patterns, n):
             if i and 'r' in cell:
                 sizes.add(tuple(size+[1]))
                 size = list(channel_mod(size, size[1] * 2))
-                if size[2]>1:
+                if size[2]>1  and i!=n:
                     sizes.add(tuple(size+[2]))
                 size = list(width_mod(size, 2))
             else:
@@ -182,7 +182,7 @@ class BST:
             self.answer = self.upper
         elif self.depth == self.max_depth:
             self.answer = self.pos
-
+         
         if result:
             self.pos -= self.step
             if self.step > self.min_step:

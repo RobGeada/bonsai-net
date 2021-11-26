@@ -71,9 +71,8 @@ class Edge(nn.Module):
         return str(self)
 
 
-    def forward(self, x, drop_prob):
+    def forward(self, x, drop_prob, fw_type):
         if self.num_ops:
-            outs = [op(x) if op.name in ['Identity','Zero'] else drop_path(op(x), drop_prob) for op in self.ops]
-            return self.normalizer(sum(outs))
+            return [op(x, fw_type) if op.name in ['Identity','Zero'] else drop_path(op(x, fw_type), drop_prob) for op in self.ops]
         else:
-            return self.zero(x)
+            return [self.zero(x)]

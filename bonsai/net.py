@@ -2,6 +2,8 @@ from bonsai.ops import *
 from bonsai.helpers import *
 from bonsai.cell import Cell
 
+import pickle as pkl
+
 arrow_char = "↳"
 
 
@@ -10,6 +12,18 @@ class Net(nn.Module):
         super().__init__()
 
         # save creation params
+        self.creation_params = {}
+        if 'genotype' in kwargs:
+            if type(kwargs['genotype']) is str:
+                with open("genotypes/genotype_"+kwargs['genotype']+'.pkl',"rb") as f:
+                    creation_params, cell_genotypes = torch.load(f)
+                    self.creation_params={k:v for k,v in creation_params.items() if k not in kwargs}
+                    self.creation_params.update(kwargs)
+                    self.creation_params['genotype'] = cell_genotypes
+                    self.creation_params['dim'] = kwargs['dim']
+                    kwargs = self.creation_params
+                    kwargs['model_id'] = kwargs['model_id'] + ' (Child {})'.format(namer().split()[0])
+            
         self.model_id = kwargs.get('model_id', namer())
         kwargs['model_id'] = self.model_id
         self.input_dim = kwargs['dim']
@@ -17,12 +31,16 @@ class Net(nn.Module):
         self.scale = kwargs['scale']
         self.patterns = looping_generator(kwargs['patterns'])
         self.nodes = kwargs['nodes']
+        self.dataset_name = kwargs['dataset_name']
         self.depth = kwargs['depth']
+        self.metric = kwargs.get('metric', 1)
         self.prune = {'edge':kwargs.get('prune', True), 'input':kwargs.get('prune',True)}
         self.classes = kwargs['classes']
         self.drop_prob = kwargs['drop_prob']
         self.towers = nn.ModuleDict()
         self.creation_params = kwargs
+        self.nth_tower = -1
+        
 
         # i/o
         self.log_print = print
@@ -33,8 +51,12 @@ class Net(nn.Module):
         self.lr_init = kwargs['lr_schedule']
 
         # initialize torch params
-        self.initializer = initializer(self.input_dim[1], self.scale)
-        dim = channel_mod(self.input_dim, self.scale)
+        if self.dataset_name=='ImageNet' or self.dataset_name=='OASIS':
+            self.initializer = ImageNetInitializer(self.input_dim[1], self.scale)
+            dim = [self.input_dim[0], self.scale, 28, 28]
+        else:
+            self.initializer = initializer(self.input_dim[1], self.scale)
+            dim = channel_mod(self.input_dim, self.scale)
         self.cell_size_est = 0
         self.dim, self.dims, self.dim_counts = dim, [dim], []
         self.raw_cells, scalers = [], {}
@@ -54,6 +76,7 @@ class Net(nn.Module):
         self.size_set = size_set
 
         self.pattern_params = {}
+        self.built_patterns = 0
         for pattern in range(kwargs['num_patterns']):
             self.add_pattern(random_ops=kwargs.get('random_ops'))
 
@@ -70,9 +93,10 @@ class Net(nn.Module):
         new_cell = Cell(len(self.dims)-1,
                         cell_type,
                         self.dims,
-                        self.nodes,
-                        self.depth,
+                        self.nodes if type(self.nodes) is int else self.nodes[len(self.dims)-1],
+                        self.depth if type(self.depth) is int else self.depth[len(self.dims)-1],
                         genotype=cell_genotype,
+                        metric=self.metric,
                         op_sizes=self.size_set,
                         random_ops=random_ops,
                         prune=prune)
@@ -80,7 +104,7 @@ class Net(nn.Module):
         removed_params = []
         self.raw_cells.append(new_cell)
 
-        if cell_type is 'Reduction':
+        if cell_type == "Reduction":
             self.dim = cw_mod(self.dim, 2)
             self.reductions += 1
         self.dim_counts += [len(self.dims)]
@@ -96,6 +120,7 @@ class Net(nn.Module):
                     removed_params = list(self.towers[tower_to_remove].parameters())
                     old_class = self.towers.pop(tower_to_remove)
                     del old_class
+                    
             self.towers['Classifier'] = Classifier(len(self.dims) - 2,
                                                    preserve_aux,
                                                    self.dim,
@@ -144,6 +169,7 @@ class Net(nn.Module):
                     new_prev_params.append(p)
             self.pattern_params[prev_key]=new_prev_params
         self.lr_schedulers[p_key] = LRScheduler(epochs_remaining, self.lr_init['lr_max'])
+        self.built_patterns+=1
 
     def track_params(self):
         self.cells = nn.ModuleList(self.raw_cells)
@@ -181,17 +207,21 @@ class Net(nn.Module):
         if remove_edge:
             clean("Edge Pruner Removal")
 
-    def forward(self, x, drop_prob=None, auxiliary=False, verbose=False):
+    def forward(self, x, fw_type='b', drop_prob=None, auxiliary=False, verbose=False):
         if drop_prob is None:
             drop_prob = self.drop_prob
         outputs = []
         start_mem = mem_stats(False)
-        xs = [self.initializer(x)]
+        if x.shape[1] == 1 and self.scale == 1:
+            xs = [x]
+        else:
+            xs = [self.initializer(x)]
+            
         if verbose:
             self.jn_print("Init: {}".format(cache_stats()))
         for i in range(len(self.cells)):
             start_mem = mem_stats(False)
-            x = self.cells[i].forward(xs, drop_prob)
+            x = self.cells[i](xs, drop_prob, fw_type=fw_type)
             if verbose:
                 self.jn_print("{}: {}".format(i,cache_stats()))
             if str(i) in self.towers.keys():
@@ -252,7 +282,7 @@ class Net(nn.Module):
                 cell_genotype['Y'] = {'zeros': cell.input_handler.zeros}
             cell_genotypes[cell.name] = cell_genotype
 
-        return self.creation_params, cell_genotypes
+        return {k:v for k,v in self.creation_params.items() if k!='genotype'}, cell_genotypes
 
     def save_genotype(self):
         id_str = self.model_id.replace(" ","_")

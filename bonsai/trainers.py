@@ -75,15 +75,21 @@ def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
 
 
 # === PERFORMANCE METRICS ==============================================================================================
-def top_k_accuracy(output, target, top_k, max_k):
-    _, pred = output.topk(max_k, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-    return [correct[:k].view(-1).float().sum(0) for k in top_k]
+def top_k_accuracy(output, target, top_k):
+    if len(output.shape)==2:
+        output = output.reshape(list(output.shape)+[1,1])
+        target = target.reshape(list(target.shape)+[1,1])
+    correct = np.zeros(len(top_k))
+    _, pred = output.topk(max(top_k), 1, True, True)
+    for i,k in enumerate(top_k):
+        target_expand = target.unsqueeze(1).repeat(1,k,1,1)
+        equal = torch.max(pred[:,:k,:,:].eq(target_expand),1)[0]
+        correct[i] = torch.sum(equal)
+    return correct, len(target.view(-1))
 
 
-def accuracy_string(prefix, corrects, t_start, loader, top_k, comp_ratio=None, return_str=False):
-    corrects = 100. * corrects / float(len(loader.dataset))
+def accuracy_string(prefix, corrects, divisor, t_start, top_k, comp_ratio=None, return_str=False):
+    corrects = 100. * corrects / float(divisor)
     out_string = "{} Corrects: ".format(prefix)
     for i, k in enumerate(top_k):
         out_string += 'Top-{}: {:.2f}%, '.format(k, corrects[i])
@@ -101,8 +107,9 @@ def accuracy_string(prefix, corrects, t_start, loader, top_k, comp_ratio=None, r
 def train(model, device, **kwargs):
     # === tracking stats ======================
     top_k = kwargs.get('top_k', [1])
-    max_k = max(top_k)
     corrects = np.zeros(len(top_k), dtype=float)
+    divisor = 0
+    div = 0
 
     # === train epoch =========================
     model.train()
@@ -113,7 +120,9 @@ def train(model, device, **kwargs):
 
     t_data_start = None
     t_cumul_data, t_cumul_ops = 0,0
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, data in enumerate(train_loader):
+        target = data[-1]
+        data  = data[0]
         t_data_end = time.time()
         if t_data_start is not None:
             t_cumul_data += (t_data_end-t_data_start)
@@ -128,13 +137,13 @@ def train(model, device, **kwargs):
             kwargs['optimizer'].zero_grad()
 
         verbose = kwargs['epoch'] == 0 and batch_idx == 0
-        outputs = model.forward(data, model.drop_prob, auxiliary=True, verbose=verbose)
+        outputs = model.forward(data, drop_prob=model.drop_prob, auxiliary=True, verbose=verbose)
 
         # classification loss =================
         def loss_f(x): return kwargs['criterion'](x, target)
         losses = [loss_f(output) for output in outputs[:-1]]
         final_loss = loss_f(outputs[-1])
-        loss = final_loss + .2 * sum(losses)
+        loss = final_loss + .4 * sum(losses)
 
         # compression loss ====================
         comp_ratio = None
@@ -147,12 +156,24 @@ def train(model, device, **kwargs):
                 loss_components = [loss] + loss_components
             loss += comp_loss
 
+        # prune ==============================
+        if model.prune['edge']:
+            edge_pruners = [op.pruner for cell in model.cells \
+                            for key, edge in cell.edges.items() for op in edge.ops if op.pruner]
+            input_pruners = [pruner for cell in model.cells \
+                            for pruner in cell.input_handler.pruners if pruner]
+            [pruner.track_gates() for pruner in edge_pruners + input_pruners]
+            [pruner.clamp() for pruner in edge_pruners + input_pruners]
+            
         # end train step ======================
         loss = loss/multiplier
         loss.backward()
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader) - 1):
             kwargs['optimizer'].step()
-        corrects = corrects + top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]), max_k=max_k)
+        corr, div = top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]))
+        corrects = corrects + corr
+        divisor += div
+    
 
         # mid epoch updates ===================
         if print_or_end:
@@ -178,7 +199,7 @@ def train(model, device, **kwargs):
 
     # === output ===============
     jn_print(prog_str)
-    accuracy_string("Train", corrects, epoch_start, train_loader, top_k, comp_ratio=comp_ratio)
+    accuracy_string("Train", corrects, divisor, epoch_start, top_k, comp_ratio=comp_ratio)
     if kwargs.get('comp_lambda') is not None:
         log_print("Train Loss Components: C: {:.3f}, E: {:.3"
                   "f}, I: {:.2f}".format(*loss_components))
@@ -187,23 +208,27 @@ def train(model, device, **kwargs):
 def test(model, device, top_k=[1]):
     # === tracking stats =====================
     test_loader = model.data[1]
-    max_k = max(top_k)
     corrects, e_corrects = np.zeros(len(top_k)), np.zeros(len(top_k))
+    divisor = 0
     t_start = time.time()
 
     # === test epoch =========================
     model.eval()
     with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(test_loader):
+        for batch_idx, data in enumerate(test_loader):
+            target = data[-1]
+            data  = data[0]
             data, target = data.to(device), target.to(device)
             outputs = model.forward(data, drop_prob=0, auxiliary=True)
             #e_output = torch.mean(torch.stack(outputs, 1), 1)
-            corrects = corrects + top_k_accuracy(outputs[-1], target, top_k=top_k, max_k=max_k)
+            corr, div = top_k_accuracy(outputs[-1], target, top_k=top_k)
+            corrects = corrects + corr
+            divisor += div
             #e_corrects = e_corrects + top_k_accuracy(e_output, target, top_k=top_k, max_k=max_k)
 
     # === format results =====================
     #log_print(accuracy_string("All Towers Test ", e_corrects, t_start, test_loader, top_k, return_str=True))
-    return accuracy_string("Last Tower Test ", corrects, t_start, test_loader, top_k, return_str=True)
+    return accuracy_string("Last Tower Test ", corrects, divisor, t_start, top_k, return_str=True)
 
 
 def size_test(model, verbose=False):
@@ -215,7 +240,9 @@ def size_test(model, verbose=False):
         criterion = nn.CrossEntropyLoss()
 
         model.train()
-        for batch_idx, (data, target) in enumerate(model.data[0]):
+        for batch_idx, data in enumerate(model.data[0]):
+            target = data[-1]
+            data  = data[0]
             data, target = data.to(device), target.to(device)
             out = model.forward(data, auxiliary=True, verbose=(verbose and batch_idx==0))
             loss = criterion(out[-1], target)
@@ -262,7 +289,6 @@ def sp_size_test(n, e_c, add_pattern, prune=True,**kwargs):
 
 # === FULL TRAINING HANDLER=============================================================================================
 def full_train(model, epochs=None, **kwargs):
-
     # === learning handlers ==================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     params = [{'params':list(p),'lr':model.lr_schedulers[k].lr,'key':k} for k, p in model.pattern_params.items()]
@@ -276,7 +302,8 @@ def full_train(model, epochs=None, **kwargs):
     log_print("Starting at {}".format(datetime.datetime.now()))
     training_logger.info(model.creation_string())
 
-    criterion = nn.CrossEntropyLoss()
+    print(kwargs.get('weights'))
+    criterion = nn.CrossEntropyLoss(weight=kwargs.get('weights'))
 
     if torch.cuda.is_available():
         model.cuda()
@@ -303,14 +330,7 @@ def full_train(model, epochs=None, **kwargs):
 
         # prune ==============================
         if model.prune['edge']:
-            model.eval()
-            edge_pruners = [op.pruner for cell in model.cells \
-                            for key, edge in cell.edges.items() for op in edge.ops if op.pruner]
-            input_pruners = [pruner for cell in model.cells \
-                            for pruner in cell.input_handler.pruners if pruner]
-            [pruner.track_gates() for pruner in edge_pruners + input_pruners]
-
-            model.deadhead(kwargs['nas_schedule']['prune_interval'])
+            model.deadhead(kwargs['nas_schedule']['prune_interval'] * len(model.data[0]))
 
             hard, soft = model.genotype_compression()[:2]
             if soft and hard:

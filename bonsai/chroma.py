@@ -1,6 +1,5 @@
 from datetime import datetime
 from IPython.display import clear_output
-import graphviz
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -8,9 +7,13 @@ import pickle as pkl
 import textwrap
 import time
 
-from bonsai.visualizer import scrape
-from bonsai.ops import commons
-
+try:
+    from bonsai.visualizer import scrape
+    from bonsai.ops import commons
+except ImportError as e:
+    from visualizer import scrape
+    from ops import commons
+    
 plt.style.use('material')
 
 
@@ -72,7 +75,7 @@ def node_remap(node):
 
 
 # === GENOTYPE PROCESSING ==============================================================================================
-def process(name=None, genotype=None, params=None, g_viz=True):
+def process(name=None, genotype=None, params=None, g_viz=False):
     colors = color_create()
     if genotype is None:
         params, genotype = pkl.load(open('genotypes/{}_np.pkl'.format(name), "rb"))

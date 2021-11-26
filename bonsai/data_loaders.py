@@ -4,6 +4,8 @@ import os
 
 import torch
 from torchvision import datasets, transforms
+from torchvision.transforms.autoaugment import AutoAugmentPolicy
+import oasis_loader
 
 # === set seeds ===
 '''
@@ -51,12 +53,15 @@ class Cutout:
 
 
 # === DATA HELPERS =====================================================================================================
-def load_data(batch_size, dataset, metadata=None):
+def load_data(batch_size, dataset, metadata=None, return_weights=False):
     data_path = os.getcwd() + "/data/"
-    download = dataset not in os.listdir(data_path)
-
+    download = dataset not in os.listdir(data_path)   
+    weights = None
+    
+    
     # dataset configuration
     if dataset == 'CIFAR10':
+        data_path='data/'
         MEAN = [0.49139968, 0.48215827, 0.44653124]
         STD  = [0.24703233, 0.24348505, 0.26158768]
 
@@ -70,6 +75,16 @@ def load_data(batch_size, dataset, metadata=None):
                                           transforms.ToTensor(),
                                           transforms.Normalize(MEAN, STD)]
                                       ))
+#         train_data = datasets.CIFAR10(data_path+dataset,
+#                                       train=True,
+#                                       download=download,
+#                                       transform=transforms.Compose([
+#                                           transforms.RandomCrop(32, padding=4),
+#                                           transforms.AutoAugment(AutoAugmentPolicy.CIFAR10),
+#                                           Cutout(mask_size=16, p=.5, mask_color=MEAN),
+#                                           transforms.ToTensor(),
+#                                           transforms.Normalize(MEAN, STD)]
+#                                       ))
         test_data = datasets.CIFAR10(data_path+dataset,
                                      train=False,
                                      download=download,
@@ -77,6 +92,10 @@ def load_data(batch_size, dataset, metadata=None):
                                          transforms.ToTensor(),
                                          transforms.Normalize(MEAN, STD)]
                                      ))
+    elif dataset == 'OASIS':
+        train_data, test_data, weights = oasis_loader.load_oasis_data()
+    
+    
     elif dataset == "MNIST":
         train_data = datasets.MNIST(data_path+dataset,
                                     train=True, 
@@ -101,7 +120,7 @@ def load_data(batch_size, dataset, metadata=None):
                                       split='train',
                                       download=False,
                                       transform=transforms.Compose([
-                                          transforms.RandomResizedCrop(112),
+                                          transforms.RandomResizedCrop(224),
                                           transforms.RandomHorizontalFlip(),
                                           transforms.ColorJitter(
                                               brightness=0.4,
@@ -115,8 +134,8 @@ def load_data(batch_size, dataset, metadata=None):
                                      split='val',
                                      download=False,
                                      transform=transforms.Compose([
-                                         transforms.Resize(128),
-                                         transforms.CenterCrop(112),
+                                         transforms.Resize(256),
+                                         transforms.CenterCrop(224),
                                          transforms.ToTensor(),
                                          transforms.Normalize(MEAN, STD)]
                                      ))
@@ -131,11 +150,15 @@ def load_data(batch_size, dataset, metadata=None):
                                               shuffle=False)
         
     # get/load dataset metadata
-    for img, target in train_loader:
+    for data in train_loader:
+        img = data[0]
         data_shape = img.shape
         break
 
-    return [train_loader, test_loader], data_shape
+    if return_weights:
+        return [train_loader, test_loader], data_shape, weights
+    else:
+        return [train_loader, test_loader], data_shape
 
 
 # === AUGMENTATION PREVIEW =============================================================================================

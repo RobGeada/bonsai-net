@@ -53,15 +53,21 @@ class Bonsai:
         wipe_output()
         self.hypers = hypers
         self.model_id = namer()
+        
+        
         self.data, self.dim = load_data(hypers['batch_size'], hypers['dataset']['name'])
-        self.hypers['total_patterns'] = get_n_patterns(hypers['patterns'],
-                                                       self.dim,
-                                                       hypers['reduction_target']) + hypers['post_patterns']
-        if sizes is None:
-            jn_print("== Determining compression ratios ==")
-            self.sizes, self.start_size = gen_compression_targets(hypers)
+        
+        if 'genotype' not in hypers:
+            self.hypers['total_patterns'] = get_n_patterns(hypers['patterns'],
+                                                           self.dim,
+                                                           hypers['reduction_target']) + hypers['post_patterns']
+            if sizes is None:
+                jn_print("== Determining compression ratios ==")
+                self.sizes, self.start_size = gen_compression_targets(hypers)
+            else:
+                self.sizes, self.start_size = sizes, start_size
         else:
-            self.sizes, self.start_size = sizes, start_size
+            self.start_size = start_size
         self.model = None
         self.random = 0
         self.e_c, self.i_c = [], []
@@ -89,40 +95,55 @@ class Bonsai:
                     random_ops['e_c'],
                     random_ops['i_c'],
                     prune))
-        else:
+        elif 'genotype' not in self.hypers:
             random_ops = None
             prune = True
             num_patterns = self.start_size
             model_id = self.model_id
-            
-        self.model = Net(
-            dim=self.dim,
-            classes=self.hypers['dataset']['classes'],
-            scale=self.hypers['scale'],
-            patterns=self.hypers['patterns'],
-            num_patterns=num_patterns,
-            total_patterns=self.hypers['total_patterns'],
-            nodes=self.hypers['nodes'],
-            depth=self.hypers['depth'],
-            random_ops=random_ops,
-            prune=prune,
-            model_id = model_id,
-            drop_prob=self.hypers['drop_prob'],
-            lr_schedule=self.hypers['lr_schedule'])
+        
+        if 'genotype' in self.hypers:
+            self.model = Net(
+                dim=self.dim,
+                dataset_name=self.hypers['dataset']['name'],
+                lr_schedule=self.hypers['lr_schedule'],
+                prune=self.hypers['prune'],
+                genotype=self.hypers['genotype'])
+            self.start_size = self.model.built_patterns
+            self.hypers['total_patterns'] = self.model.built_patterns
+        else:
+            self.model = Net(
+                dim=self.dim,
+                classes=self.hypers['dataset']['classes'],
+                dataset_name=self.hypers['dataset']['name'],
+                scale=self.hypers['scale'],
+                patterns=self.hypers['patterns'],
+                num_patterns=num_patterns,
+                total_patterns=self.hypers['total_patterns'],
+                nodes=self.hypers['nodes'],
+                depth=self.hypers['depth'],
+                random_ops=random_ops,
+                prune=prune,
+                model_id = model_id,
+                drop_prob=self.hypers['drop_prob'],
+                lr_schedule=self.hypers['lr_schedule'])
+        
+        
         
         if self.random==1:
             self.model.add_pattern()
         
         self.model.data = self.data
+        self.model.dataset_name = self.hypers['dataset']['name']
 
     def reinit(self):
-        num_patterns = len(self.model.pattern_params)
+        num_patterns = self.model.built_patterns
         self.start_size = num_patterns
         genotype = self.model.extract_genotype(weights=False)[1]
         self.model = Net(
             dim=self.dim,
             genotype=genotype,
             classes=self.hypers['dataset']['classes'],
+            dataset_name=self.hypers['dataset']['name'],
             scale=self.hypers['scale'],
             patterns=self.hypers['patterns'],
             num_patterns=num_patterns,
@@ -130,7 +151,7 @@ class Bonsai:
             nodes=self.hypers['nodes'],
             depth=self.hypers['depth'],
             random_ops=None,
-            prune=True,
+            prune=self.hypers.get('prune', True),
             model_id = self.model_id,
             drop_prob=self.hypers['drop_prob'],
             lr_schedule=self.hypers['lr_schedule'])
@@ -140,8 +161,29 @@ class Bonsai:
         _, e_c, i_c = self.model.genotype_compression()
         self.e_c.append(e_c)
         self.i_c.append(i_c)
+
+    def reinit_train(self):
+        start_t = time.time()
+        curr_patterns = self.model.built_patterns
+        while curr_patterns < self.hypers['total_patterns']:
+            print("Built {} of {} patterns.".format(curr_patterns, self.hypers['total_patterns']))
+            curr_patterns = self.train(verbose=False)
+            self.reinit()
+            
+#         n_prune_loops = 2
+#         for _ in range(n_prune_loops):
+#             self.train(verbose=False)
+#             if _ != n_prune_loops-1:
+#                 self.reinit()
         
-    def train(self):
+        print('Finished!')
+        jn_print("Search Time: {}".format(show_time(time.time() - start_t)))
+        self.hypers['lr_schedule']['T'] = 600
+        #self.hypers['prune'] = False
+        self.reinit()
+        self.train(verbose=False)
+
+    def train(self, verbose=True):
         if self.model is None:
             self.generate_model()
 
@@ -172,7 +214,8 @@ class Bonsai:
 
             # print search stats
             clean("Search End")
-            jn_print("Search Time: {}".format(show_time(time.time() - search_start)))
+            if verbose:
+                jn_print("Search Time: {}".format(show_time(time.time() - search_start)))
             if len(self.e_c):
                 jn_print("Edge Comp: {} Input Comp: {}".format(self.e_c[-1], self.i_c[-1]))
             jn_print(str(self.model))

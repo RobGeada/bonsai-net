@@ -13,17 +13,17 @@ class Pruner(nn.Module):
         super().__init__()
         if init is None:
             init = .01
-        if init is 'off':
+        elif init is 'off':
             init = -1.
+        elif type(init) is int:
+            init = float(init)
+        self.init = init
         self.mem_size = mem_size
-        self.weight = nn.Parameter(torch.tensor([init]))
-        self.m = m
+        self.weight = nn.Parameter(torch.tensor([self.init]))
+        self.m = torch.tensor(m)
+        self.m_inv = 1/m
         
-        self.gate = lambda w: w>0
-        self.saw = lambda w: (self.m * w - torch.floor(self.m * w)) / self.m
         self.weight_history = []
-        self.actual_weight_vals = []
-        self.weight_history_history = []
 
     def __str__(self):
         return 'Pruner: M={},N={}'.format(self.M, self.channels)
@@ -33,31 +33,49 @@ class Pruner(nn.Module):
         return sum([np.prod(p.size()) for p in filter(lambda p: p.requires_grad, self.parameters())])
 
     def track_gates(self):
-        self.actual_weight_vals.append(self.weight.item())
-        self.weight_history.append(self.gate(self.weight).item())
+        #self.actual_weight_vals.append(self.weight.item())
+        self.weight_history.append(self.gate().item())
 
-    def get_deadhead(self, deadhead_epochs, verbose=False):
-        if len(self.weight_history)<deadhead_epochs:
+    def get_deadhead(self, prune_interval, verbose=False):
+        if len(self.weight_history)<prune_interval:
             return False
-        deadhead = not any(self.weight_history[-deadhead_epochs:])
+        deadhead = (prune_interval * .25) > sum(self.weight_history[-prune_interval:])
         if deadhead:
             self.switch_off()
-        self.weight_history_history+=self.weight_history
+        self.weight_history = self.weight_history[-prune_interval:]
         
         if verbose:
             print(self.weight_history, deadhead)
         return deadhead
 
+    def clamp(self):
+        pre = self.weight.item()
+        bound = self.init * 5
+        if self.weight > bound:
+            self.weight.data = self.weight.data * bound/self.weight.data
+        elif self.weight < -bound:
+            self.weight.data = self.weight.data * -bound/self.weight.data
+    
     def switch_off(self):
         for param in self.parameters():
             param.requires_grad = False
     
+    def saw(self):
+        return torch.remainder(self.weight, self.m_inv)
+    
+    def gate(self):
+        return self.weight > 0
+
     def sg(self):
-        return self.saw(self.weight) + self.gate(self.weight)
+        return self.saw() + self.gate()
+          
 
     def forward(self, x):
         return self.sg() * x
 
+    
+        
+    
 
 # === OP + PRUNER COMBO =================================================================================
 class PrunableOperation(nn.Module):
@@ -89,12 +107,14 @@ class PrunableOperation(nn.Module):
     def __str__(self):
         return self.name
 
-    def forward(self, x):
+    def forward(self, x, fw_type=None):
         if self.prune:
             out = self.op(x) if self.zero else self.pruner(self.op(x))
+                                                           
         else:
             out = self.op(x)
         return out
+    
 
 
 # === INPUT HANDLER FOR PRUNED CELL INPUTS
@@ -160,9 +180,18 @@ class PrunableInputs(nn.Module):
     def __str__(self):
         return str(self.get_ins())
 
-    def forward(self, xs):
+    def forward(self, xs, fw_type=None):
+        out = None
         if self.prune:
-            out = sum([op(xs[i]) if self.zeros[i] else self.pruners[i](op(xs[i])) for i,op in enumerate(self.ops)])
+            for i, op in enumerate(self.ops):
+                if out is None:
+                    out = op(xs[i]) if self.zeros[i] else self.pruners[i](op(xs[i]))
+                else:
+                    out = out + op(xs[i]) if self.zeros[i] else self.pruners[i](op(xs[i]))
         else:
-            out = sum([op(xs[i]) for i, op in enumerate(self.ops)])
+            for op in self.ops:
+                if out is None:
+                    out = op(xs[i])
+                else:
+                    out = out + op(xs[i])
         return self.scaler(out)
