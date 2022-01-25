@@ -61,7 +61,7 @@ if __name__ == '__main__':
             [n, e_c, add_pattern, prune, kwargs] = pkl.load(f)
         data, dim = load_data(kwargs['batch_size'], kwargs['dataset']['name'])
         print(kwargs)
-        metric = kwargs['metric']
+        metric = 1
         model = Net(dim=dim,
                     classes=kwargs['dataset']['classes'],
                     dataset_name=kwargs['dataset']['name'],

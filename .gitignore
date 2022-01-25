@@ -12,4 +12,9 @@ chroma_ims/**
 chroma.webm
 **/*.pt
 **/*.pkl
+oasis*
+bin_packing*
+*Copy1*
+Untitled*
+genotype_loader*
 **/__pycache__/**

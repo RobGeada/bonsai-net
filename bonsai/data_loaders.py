@@ -70,21 +70,11 @@ def load_data(batch_size, dataset, metadata=None, return_weights=False):
                                       download=download,
                                       transform=transforms.Compose([
                                           transforms.RandomCrop(32, padding=4),
-                                          transforms.RandomHorizontalFlip(),
+                                          transforms.AutoAugment(AutoAugmentPolicy.CIFAR10),
                                           Cutout(mask_size=16, p=.5, mask_color=MEAN),
                                           transforms.ToTensor(),
                                           transforms.Normalize(MEAN, STD)]
                                       ))
-#         train_data = datasets.CIFAR10(data_path+dataset,
-#                                       train=True,
-#                                       download=download,
-#                                       transform=transforms.Compose([
-#                                           transforms.RandomCrop(32, padding=4),
-#                                           transforms.AutoAugment(AutoAugmentPolicy.CIFAR10),
-#                                           Cutout(mask_size=16, p=.5, mask_color=MEAN),
-#                                           transforms.ToTensor(),
-#                                           transforms.Normalize(MEAN, STD)]
-#                                       ))
         test_data = datasets.CIFAR10(data_path+dataset,
                                      train=False,
                                      download=download,
