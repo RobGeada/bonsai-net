@@ -5,7 +5,6 @@ import os
 import torch
 from torchvision import datasets, transforms
 from torchvision.transforms.autoaugment import AutoAugmentPolicy
-import oasis_loader
 
 # === set seeds ===
 '''
