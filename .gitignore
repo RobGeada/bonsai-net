@@ -22,4 +22,6 @@ test_run.py
 !chroma.ipynb
 !nas-vert.ipynb*
 !monitoring.ipynb*
+bonsai_gcn/**
+bonsai_graph/**
 **/__pycache__/**
