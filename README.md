@@ -3,5 +3,8 @@
 
 `pip3 install -r requirements.txt`
 
-# Testing
-`python3 test_model.py`
+# Running   
+See `nas-vert.iypnb` for usage.
+
+# Monitoring
+`monitoring.ipynb` will track running models. 
