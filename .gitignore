@@ -17,4 +17,9 @@ bin_packing*
 *Copy1*
 Untitled*
 genotype_loader*
+**/*.ipynb
+test_run.py
+!chroma.ipynb
+!nas-vert.ipynb*
+!monitoring.ipynb*
 **/__pycache__/**
